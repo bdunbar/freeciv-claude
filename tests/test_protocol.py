@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fcbot.protocol import constants, pdef
 from fcbot.protocol.codec import Codec
 from fcbot.protocol.connection import _find_packets_def
-from fcbot import fcmap
+from fcbot import chat, fcmap
 
 
 class SpecTest(unittest.TestCase):
@@ -99,6 +99,36 @@ class TopologyTest(unittest.TestCase):
             d = topo.direction_to(500, neighbour)
             self.assertIsNotNone(d)
             self.assertEqual(topo.step(500, d), neighbour)
+
+
+class ChatTest(unittest.TestCase):
+    def packet(self, message, event=chat.E_CHAT_MSG, conn_id=2):
+        return {"message": message, "conn_id": conn_id, "turn": 7,
+                "event": event, "tile": -1}
+
+    def test_player_chat_is_attributed(self):
+        m = chat.from_packet(
+            self.packet('[c fg="#ffffff"]<Perikles> Hope you like tundra.[/c]'),
+            {2: {"username": "bdunbar"}})
+        self.assertTrue(m.is_chat)
+        self.assertEqual(m.speaker, "Perikles")
+        self.assertEqual(m.sender, "bdunbar")
+        self.assertEqual(m.text, "Hope you like tundra.")
+
+    def test_notifications_are_not_chat(self):
+        m = chat.from_packet(self.packet("Your city Roma has grown.", event=1),
+                             {})
+        self.assertFalse(m.is_chat)
+        self.assertIsNone(m.speaker)
+        self.assertEqual(m.event_name, "E_CITY_LOST")
+
+    def test_unknown_sender_is_tolerated(self):
+        m = chat.from_packet(self.packet("Game started.", conn_id=-1), {})
+        self.assertIsNone(m.sender)
+
+    def test_event_table_is_populated(self):
+        self.assertGreater(len(chat.EVENT_NAMES), 100)
+        self.assertEqual(chat.EVENT_NAMES[chat.E_CHAT_MSG], "E_CHAT_MSG")
 
 
 if __name__ == "__main__":

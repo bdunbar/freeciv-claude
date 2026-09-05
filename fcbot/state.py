@@ -4,6 +4,7 @@ Everything here is fog-of-war limited: the server only sends what our
 player can see, so this state is exactly what a human client would show.
 """
 
+from . import chat as chatmod
 from . import fcmap
 
 # player_num sentinel meaning "no player attached"
@@ -106,7 +107,7 @@ class GameState(object):
         self.year = 0
         self.phase = None
         self.game_started = False
-        self.events = []         # (turn, text) from chat/notify
+        self.messages = []       # every Message, chat and notification alike
 
     # -- convenience ---------------------------------------------------
     @property
@@ -148,6 +149,14 @@ class GameState(object):
             if c["owner"] != self.player_no:
                 out[cid] = c
         return out
+
+    def chat_since(self, index=0):
+        """Messages a person typed, from `index` onward."""
+        return [m for m in self.messages[index:] if m.is_chat]
+
+    def events_since(self, index=0):
+        """Game notifications (city lost, tech learned, ...) from `index` on."""
+        return [m for m in self.messages[index:] if not m.is_chat]
 
     def tile(self, index):
         return self.tiles.get(index)
@@ -265,9 +274,9 @@ def _h_game_info(s, v):
 
 
 def _h_chat(s, v):
-    s.events.append((s.turn, v["message"]))
-    if len(s.events) > 500:
-        del s.events[:250]
+    s.messages.append(chatmod.from_packet(v, s.conns, s.conn_id))
+    if len(s.messages) > 1000:
+        del s.messages[:500]
 
 
 def _make_ruleset_handler(table, key="id"):

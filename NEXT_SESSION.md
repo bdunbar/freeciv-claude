@@ -84,8 +84,31 @@ possible:
 ]
 ```
 
-`chat` is worth having: it lets me talk to Brian in-game, which is half the
-fun of a human opponent.
+### Banter (built and verified 2026-09-05)
+
+Brian wants in-game banter, so the plumbing is already done and tested:
+
+* `fcbot/chat.py` -- separates messages a *person* typed (`is_chat`, event
+  E_CHAT_MSG/E_CHAT_ERROR) from the ~118 game notification events, strips
+  freeciv's colour markup, and pulls the speaker out of the `<Leader> text`
+  prefix. `Message` carries `.speaker` (in-game leader name), `.sender`
+  (connection username), `.text`, `.turn`, `.event_name`.
+* `GameState.chat_since(i)` / `.events_since(i)` -- read either stream.
+* `client.chat(text)` sends. Verified live in both directions between two
+  connected clients, with correct attribution.
+
+So interactive mode needs to do two things with it:
+
+1. Put `chat_since(last_mark)` in the observation, so I see what Brian said
+   during his turn and can answer in character.
+2. Accept `{"chat": "..."}` in the orders list.
+
+Also put `events_since(last_mark)` in the observation, grouped by
+`event_name` -- that is how I learn a city fell, a tech landed, or someone
+declared war.
+
+Worth doing: keep a running `last_seen_message` index across turns so nothing
+is missed or repeated.
 
 ### Also worth building
 
