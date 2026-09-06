@@ -16,7 +16,75 @@ whatever pace that takes. That is built and working.
 * Auto mode logs in as `fcbot`, interactive as `claude`, so the wire name
   always says who is actually deciding.
 
-## Still worth doing
+## From the first real game (2026-09-05, turns 1-15)
+
+Played a live game as Claudius of the Romans against Brian's Celts and three
+hard AIs, driven entirely through the observation/orders files. It works --
+the seat founded a city, expanded, fought off nothing, and held a
+conversation. What it turned up, roughly in order of how much it cost me:
+
+### 1. There is no diplomacy at all
+
+The biggest gap. Both AIs I met declared war on sight and then repeatedly
+offered a ceasefire, and there is no way to accept. `orders.py` has no
+diplomacy verb because `client.py` implements no treaty packets:
+`PACKET_DIPLOMACY_INIT_MEETING_REQ`, `_CREATE_CLAUSE_REQ`,
+`_ACCEPT_TREATY_REQ`, `_CANCEL_MEETING_REQ`, plus handling the incoming
+`PACKET_DIPLOMACY_*` so a pending meeting shows up in the observation.
+
+Without it the seat cannot make peace, trade techs, form an alliance, or
+respond to Brian as anything but a chat partner -- in a five-player game
+that is most of the strategy space missing. Do this one first.
+
+### 2. The map overview blows up as the explorer wanders
+
+`observe._overview_radius()` takes the distance to the furthest *known*
+tile, so one explorer 20 tiles away turned the render into a 43x43 grid that
+was ~90% `?`, with my actual territory in one corner. It should key off
+where my cities and units are, not the frontier -- or render the bounding
+box of known tiles instead of a square around one centre.
+
+### 3. Orders are not checked against the observation
+
+I ordered research on Alphabet when the observation already listed it under
+`known`. The server dropped it silently (`handle_player_research` requires
+`TECH_PREREQS_KNOWN`), the result file said "sent", and a turn of research
+was lost. `orders.py` can catch this class of thing cheaply: reject a tech
+in `known`, a unit or city id that is not ours, a rate split that a
+government forbids.
+
+### 4. The observation cannot see two things it needs
+
+* **Unit population cost.** Settlers cost 2 pop here, so a city needs to be
+  size 3. I learned that from an `E_CITY_CANTBUILD` event after buying a
+  settler the city could not build. `pop_cost` is in `PACKET_RULESET_UNIT`
+  and should be on each city's build options.
+* **Turns to grow.** Cities report `turns_to_completion` for shields but
+  nothing for food, so I twice mis-estimated how long expansion was blocked
+  (once as seven turns when it was one). Add food box size and turns to
+  grow.
+
+### 5. No city tile management
+
+For ten turns straight the binding constraint was food, and there was no
+lever: no way to rearrange worked tiles or ask for a food-focused
+arrangement. `PACKET_CITY_MAKE_WORKER` and the CM parameter packets exist;
+the orders schema exposes neither.
+
+### 6. Smaller things
+
+* `GameState.chat_since()` returns our own messages too, so the seat's own
+  chat comes back under "SAID TO YOU".
+* Editing `observe.py` or `orders.py` mid-game does nothing -- the host
+  imported them at startup, and restarting it drops the client out of the
+  game. Re-importing them per turn would make the seat tunable while
+  playing, which is exactly when you notice what is wrong with it.
+* Shield overflow: while a build is blocked on population, shields pile up
+  past the cost and are wasted. I handled it by hand twice (slotting in a
+  Warriors, then a Workers). Worth surfacing in the observation as a
+  warning rather than leaving it to be noticed.
+
+## Still worth doing (from building it, before the game)
 
 * **Resuming mid-game is untested.** `--save-each-turn` writes a save every
   turn, but reconnecting to a game already under way may land the client as
@@ -25,7 +93,8 @@ whatever pace that takes. That is built and working.
 * The observation has no *history*: each turn is a fresh snapshot, so
   noticing "that stack has been getting closer for three turns" is left to
   whoever reads it. A short per-turn diff might be worth adding.
-* Auto mode still never wages war and has no diplomacy.
+* Auto mode still never wages war and has no diplomacy (and now neither
+  does interactive mode -- see above; fixing it in `client.py` fixes both).
 * `fcgame.py` prints `research: goal -> goal set to X` -- the word "goal"
   twice. Cosmetic, in `agent.py` `manage_research` plus its caller.
 
