@@ -3,22 +3,34 @@
 
     ./fcgame.py host --ai 3 --skill hard
 
-Starts a freeciv server, connects Claude's client to it, then waits for you
-to join with your normal freeciv client and pick a nation. Once you click
-'Ready', the game starts and Claude plays its own turns.
+Starts a freeciv server, connects a second client to it, then waits for you
+to join with your own freeciv client and pick a nation. Once you click
+'Ready', the game begins.
 
-Claude sees exactly what the server tells it -- same fog of war as you.
+Who plays that second seat depends on --mode:
+
+  interactive  (default) every turn is written out as an observation and
+               the game waits for a file of orders back. The decisions are
+               the model's; this program only carries them.
+  auto         fcbot/agent.py plays, by fixed rules. No model involved --
+               it logs in as `fcbot` rather than `claude` to keep that
+               distinction visible in the game.
+
+Either way it sees exactly what the server tells it: same fog of war as you.
 """
 
 import argparse
+import json
+import os
 import re
 import sys
 import time
 
 from fcbot.agent import Agent, Strategy
 from fcbot.client import Client
+from fcbot.interactive import InteractiveAgent
 from fcbot.server import Server
-from fcbot import state
+from fcbot import observe, state
 
 STRIP_MARKUP = re.compile(r"\[/?c[^\]]*\]")
 
@@ -64,7 +76,11 @@ def cmd_host(args):
                   timeout=args.timeout)
     log("ruleset=%s  ai_players=%d (%s)" % (args.ruleset, args.ai, args.skill))
 
-    client = Client(port=args.port, username=args.username, log=log)
+    # The name on the wire should say who is actually deciding: the model
+    # in interactive mode, the scripted agent in auto mode.
+    username = args.username or ("claude" if args.mode == "interactive"
+                                 else "fcbot")
+    client = Client(port=args.port, username=username, log=log)
     client.login()
     client.pump(3.0)
     while client.player_no is None:
@@ -76,8 +92,8 @@ def cmd_host(args):
         log("no nation matching %r; using the server's choice" % args.nation)
     else:
         client.select_nation(nid, args.leader)
-        log("Claude is playing the %s (leader %s)" %
-            (nation["adjective"], args.leader))
+        log("%s is playing the %s (leader %s)" %
+            (username, nation["adjective"], args.leader))
     client.pump(1.0)
     # Deliberately NOT ready yet: the server starts the game the moment every
     # player is ready, and AI players always are. Readying now would start the
@@ -108,7 +124,7 @@ def cmd_host(args):
             srv.stop()
             return 1
 
-    log("you are ready -- Claude is readying up, game starting")
+    log("you are ready -- %s is readying up, game starting" % username)
     client.set_ready(True)
     client.pump(1.0)
 
@@ -120,9 +136,14 @@ def cmd_host(args):
     if not game.units:
         srv.start_game()
 
-    strategy = Strategy()
-    strategy.target_cities = args.target_cities
-    agent = Agent(client, strategy, log=log)
+    if args.mode == "interactive":
+        turns_dir = args.turns_dir or os.path.join(args.savedir, "turns")
+        agent = InteractiveAgent(client, turns_dir, log=log)
+        log("interactive mode: each turn waits for orders in %s" % turns_dir)
+    else:
+        strategy = Strategy()
+        strategy.target_cities = args.target_cities
+        agent = Agent(client, strategy, log=log)
     return play_loop(client, agent, srv, args)
 
 
@@ -155,9 +176,15 @@ def play_loop(client, agent, srv, args):
             if game.turn != last_turn:
                 last_turn = game.turn
             report = agent.play_turn()
-            summarise(game, report, agent)
+            if isinstance(report, dict):
+                summarise(game, report, agent)
             client.end_phase()
             client.pump(0.5)
+            if args.save_each_turn:
+                srv.save("turn%04d" % game.turn)
+            # Interactive turns block for as long as the model takes, so the
+            # stall timer must not count that against us.
+            idle_since = time.time()
         elif time.time() - idle_since > args.stall_timeout:
             log("no phase for %ds; stopping." % args.stall_timeout)
             break
@@ -166,6 +193,35 @@ def play_loop(client, agent, srv, args):
         srv.save(args.save_on_exit)
         time.sleep(1)
     srv.stop()
+    return 0
+
+
+def cmd_status(args):
+    """Show what the bot is looking at, without touching the game."""
+    if not os.path.isdir(args.turns_dir):
+        log("no turns directory at %s" % args.turns_dir)
+        return 1
+    files = sorted(f for f in os.listdir(args.turns_dir)
+                   if f.endswith(".obs.json"))
+    if not files:
+        log("no observations written yet in %s" % args.turns_dir)
+        return 1
+    if args.turn is not None:
+        wanted = "%04d.obs.json" % args.turn
+        if wanted not in files:
+            log("no observation for turn %d (have %s)" %
+                (args.turn, ", ".join(f[:4] for f in files)))
+            return 1
+        chosen = wanted
+    else:
+        chosen = files[-1]
+    with open(os.path.join(args.turns_dir, chosen)) as fp:
+        obs = json.load(fp)
+    print(observe.to_text(obs))
+    orders = obs.get("orders_go_in")
+    if orders and not os.path.exists(orders):
+        print()
+        print("Waiting for orders in %s" % orders)
     return 0
 
 
@@ -209,18 +265,36 @@ def main(argv=None):
     host.add_argument("--nation", default="Roman",
                       help="nation for Claude to play")
     host.add_argument("--leader", default="Claudius")
-    host.add_argument("--username", default="claude")
+    host.add_argument("--username", default=None,
+                      help="login name (default: 'claude' in interactive "
+                           "mode, 'fcbot' in auto mode)")
     host.add_argument("--client", default=DEFAULT_CLIENT,
                       help="command shown for joining with your own client")
     host.add_argument("--target-cities", type=int, default=6)
     host.add_argument("--timeout", type=int, default=0,
                       help="server turn timeout in seconds (0 = untimed)")
+    host.add_argument("--mode", default="interactive",
+                      choices=["interactive", "auto"],
+                      help="interactive: the model plays every turn through "
+                           "files; auto: the scripted agent plays")
+    host.add_argument("--turns-dir", default=None,
+                      help="where interactive mode writes observations "
+                           "(default: <savedir>/turns)")
+    host.add_argument("--save-each-turn", action="store_true",
+                      help="save the game every turn, so it survives a reboot")
     host.add_argument("--savedir", default="games")
     host.add_argument("--server-log", default=None)
     host.add_argument("--join-timeout", type=int, default=900)
     host.add_argument("--stall-timeout", type=int, default=600)
     host.add_argument("--save-on-exit", default=None)
     host.set_defaults(func=cmd_host)
+
+    status = sub.add_parser(
+        "status", help="print the latest observation as readable text")
+    status.add_argument("--turns-dir", default=os.path.join("games", "turns"))
+    status.add_argument("--turn", type=int, default=None,
+                        help="a specific turn (default: the latest)")
+    status.set_defaults(func=cmd_status)
 
     args = parser.parse_args(argv)
     try:

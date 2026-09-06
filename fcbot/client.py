@@ -217,6 +217,12 @@ class Client(object):
         return self.change_production(city_id, state.VUT_IMPROVEMENT,
                                       improvement_id)
 
+    def set_worklist(self, city_id, entries):
+        """entries: [(kind, value)] to build after the current item."""
+        self.conn.send("PACKET_CITY_WORKLIST", city_id=city_id,
+                       worklist=list(entries))
+        return True
+
     def buy_production(self, city_id):
         self.conn.send("PACKET_CITY_BUY", city_id=city_id)
         return True

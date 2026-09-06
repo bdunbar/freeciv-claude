@@ -74,6 +74,15 @@ SSA_AUTOEXPLORE = 2
 VUT_IMPROVEMENT = 3
 VUT_UTYPE = 6
 
+# enum diplstate_type (common/player.h)
+DIPLSTATE_NAMES = {
+    0: "armistice", 1: "war", 2: "ceasefire", 3: "peace",
+    4: "alliance", 5: "no contact", 6: "team",
+}
+
+#: TILE_INFO's `resource` carries this when the tile has none.
+NO_RESOURCE = 250        # MAX_EXTRA_TYPES
+
 
 class Ruleset(object):
     """Static game rules, learned from the RULESET_* packet stream."""
@@ -87,7 +96,9 @@ class Ruleset(object):
         self.nations = {}
         self.extras = {}
         self.resources = {}
+        self.specialists = {}
         self.control = {}
+        self.terrain_control = {}
         self.game = {}
 
     # name lookups are how the agent refers to things
@@ -130,6 +141,7 @@ class GameState(object):
         self.players = {}        # player number -> PLAYER_INFO
         self.research = {}       # research id -> RESEARCH_INFO
         self.conns = {}
+        self.diplstates = {}     # (plr1, plr2) -> PLAYER_DIPLSTATE
         self.player_no = None
         self.conn_id = None
         self.turn = 0
@@ -178,6 +190,23 @@ class GameState(object):
             if c["owner"] != self.player_no:
                 out[cid] = c
         return out
+
+    @property
+    def move_fragments(self):
+        """Move points per tile step; movesleft is counted in these."""
+        return self.ruleset.terrain_control.get("move_fragments", 1) or 1
+
+    def diplstate(self, other, me=None):
+        """Our diplomatic state toward another player, as a dict or None."""
+        me = self.player_no if me is None else me
+        return (self.diplstates.get((me, other))
+                or self.diplstates.get((other, me)))
+
+    def has_embassy_with(self, other):
+        me = self.me
+        if not me:
+            return False
+        return bool(me.get("real_embassy", 0) >> other & 1)
 
     def is_ai(self, player):
         """Whether a PLAYER_INFO belongs to a computer player."""
@@ -345,6 +374,7 @@ _HANDLERS = {
     "PACKET_RULESET_NATION": _make_ruleset_handler("nations"),
     "PACKET_RULESET_EXTRA": _make_ruleset_handler("extras"),
     "PACKET_RULESET_RESOURCE": _make_ruleset_handler("resources"),
+    "PACKET_RULESET_SPECIALIST": _make_ruleset_handler("specialists"),
 }
 
 
@@ -356,5 +386,15 @@ def _h_ruleset_game(s, v):
     s.ruleset.game = v
 
 
+def _h_terrain_control(s, v):
+    s.ruleset.terrain_control = v
+
+
+def _h_diplstate(s, v):
+    s.diplstates[(v["plr1"], v["plr2"])] = v
+
+
 _HANDLERS["PACKET_RULESET_CONTROL"] = _h_ruleset_control
 _HANDLERS["PACKET_RULESET_GAME"] = _h_ruleset_game
+_HANDLERS["PACKET_RULESET_TERRAIN_CONTROL"] = _h_terrain_control
+_HANDLERS["PACKET_PLAYER_DIPLSTATE"] = _h_diplstate

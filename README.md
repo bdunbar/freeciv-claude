@@ -16,13 +16,66 @@ package has a matching 3.2 client *and* server in one install, and is what
 
     ./fcgame.py host --ai 3 --skill hard
 
-That starts a server, connects Claude to it, and prints a join command.
-In another terminal:
+That starts a server, connects a second client to it, and prints a join
+command. In another terminal:
 
     flatpak run org.freeciv.gtk322 -a -p 5556 -s localhost
 
-Pick a nation, click **Ready**, and the game begins. Claude plays its own
-turns and prints what it is doing.
+Pick a nation, click **Ready**, and the game begins.
+
+## Who is playing
+
+Two modes, and the difference matters:
+
+    --mode interactive   (default) Claude decides every move
+    --mode auto          fcbot/agent.py decides, by fixed rules
+
+**Interactive** is the real thing. Each turn the game writes out everything
+it can see and then blocks, untimed, until a file of orders appears:
+
+    games/turns/0042.obs.json     what we can see
+    games/turns/0042.obs.txt      the same thing, readable
+    games/turns/0042.orders.json  <- you (or Claude) write this
+    games/turns/0042.result.json  what each order did
+
+Nothing moves until those orders are written, so a turn can take as long as
+it takes; your client just shows the seat as still thinking. Run the host
+under `tmux` or `nohup` and the game outlives the session that started it.
+Add `--save-each-turn` and it outlives a reboot.
+
+To see what the seat is currently looking at, without touching the game:
+
+    ./fcgame.py status
+
+**Auto** mode is the scripted fallback. `fcbot/agent.py` is a few hundred
+lines of if-statements -- it does not wage war, has no diplomacy, and is a
+weak opponent. It logs in as `fcbot` rather than `claude` precisely so a
+game against the script is never mistaken for a game against the model.
+
+### Orders
+
+A JSON list, applied in order. Tiles are an index or an `[x, y]` map
+coordinate; units, cities and techs are named, not numbered:
+
+```json
+[
+  {"unit": 112, "goto": [14, 22], "then": "found_city"},
+  {"unit": 115, "activity": "fortify"},
+  {"unit": 118, "activity": "explore"},
+  {"city": 131, "build": ["unit", "Phalanx"]},
+  {"city": 131, "worklist": [["improvement", "Temple"]]},
+  {"city": 131, "buy": true},
+  {"research_goal": "Currency"},
+  {"rates": {"tax": 30, "luxury": 0, "science": 70}},
+  {"government": "Monarchy"},
+  {"chat": "Nice city. It would be a shame if something happened to it."}
+]
+```
+
+A bad order does not cost you the turn: it is reported as `FAILED` in the
+result file and the rest still run. `sent` in that file means the packet
+went out -- whether the server honoured it shows up in the next
+observation, which is the only real verdict.
 
 ## How it works
 
@@ -58,7 +111,10 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/fcmap.py` | topology: tile indices, native/map coords, directions |
 | `fcbot/fcpath.py` | pathfinding over tiles we actually know |
 | `fcbot/client.py` | player actions: orders, production, research, rates |
-| `fcbot/agent.py` | the baseline playing agent |
+| `fcbot/observe.py` | what we can see, shaped to be read (including the map) |
+| `fcbot/orders.py` | JSON orders resolved to real actions |
+| `fcbot/interactive.py` | the turn loop that waits for the model |
+| `fcbot/agent.py` | the scripted fallback agent (`--mode auto`) |
 | `fcbot/server.py` | launches and drives `freeciv-server` |
 | `legacy/` | an earlier savegame-editing approach, superseded |
 | `preserve-2.6.6/` | the old 2.6.6 debs, kept only as a historical reference |
@@ -86,6 +142,10 @@ few things are genuinely different and are easy to get wrong:
 
     ./fcgame.py host --help
 
+    --mode MODE       interactive (default) | auto
+    --turns-dir DIR   where interactive mode writes turns
+                      (default: <savedir>/turns)
+    --save-each-turn  save every turn, so the game survives a reboot
     --ai N            computer players besides you and Claude (default 3)
     --skill LEVEL     novice | easy | normal | hard | cheating | experimental
     --ruleset NAME    default: classic
@@ -94,6 +154,10 @@ few things are genuinely different and are easy to get wrong:
     --nation NAME     nation for Claude to play (default: Roman)
     --port N          default 5556
     --timeout SECS    server turn timer; 0 (default) means untimed
+                      -- leave it at 0, interactive turns take as long as
+                      they take
+
+    ./fcgame.py status [--turn N]     read the latest observation
 
 ## Fair play
 
@@ -103,12 +167,38 @@ Claude uses only what a human client can:
   foreign units outside its vision are simply absent from its state;
 * `auto worker` and `explore` are delegated to the server, exactly as the
   buttons in the GTK client do;
+* the observation is built only from `GameState`, which is assembled from
+  the packet stream -- there is nowhere for it to learn anything the server
+  did not send;
 * no server-console commands and no savegame inspection are used during play.
 
 The server console is used only before the game starts, for setup, and is
 what starts the game once you click Ready.
 
-## Agent strategy
+## The map
+
+The part of the observation that decides how well the seat plays. It is
+rendered in **map coordinates**, the ones the movement directions operate
+on, so north is up and east is right -- tile *indices* are laid out
+differently on isometric maps and would not render sensibly. Two characters
+per tile: a lowercase terrain letter, then a marker.
+
+```
+                30        35        40
+     31 ? ? ? ? ? r*f~f*o o o ? ? ? ?
+     32 ? ? ? ? ? r r r o o o s*h m r*
+     33 ? ? ? ? ? ? p f~f*e e p~rUh h
+     35 ? ? ? ? ? ? ? ? f h*r r*r e fC
+```
+
+`C` our city, `X` foreign city, `U` our unit, `E` foreign unit, `*`
+resource, `~` river. `?` is unexplored and blank is off the map. Markers are
+uppercase and terrain letters are lowercase, so the two halves of a cell can
+never be confused; the terrain letters themselves are assigned from whatever
+ruleset is loaded and spelled out in the legend. Each city also gets a close
+-up view of its own surroundings.
+
+## Agent strategy (auto mode)
 
 `fcbot/agent.py` holds a `Strategy` object -- city target, research plan,
 build priorities, science rate. It is meant to be adjusted between turns,

@@ -72,6 +72,14 @@ class Topology(object):
                    else (DIR8_SOUTHEAST, DIR8_NORTHWEST))
         return tuple(d for d in range(DIR8_COUNT) if d not in dropped)
 
+    def direction_names(self):
+        """Which of the eight directions are moves here, spelled out."""
+        names = ", ".join(DIR_NAMES[d] for d in self.valid_directions())
+        if len(self.valid_directions()) == DIR8_COUNT:
+            return "all eight directions are moves: " + names
+        return ("this map is %s, so only these are moves: %s" %
+                ("iso-hex" if self.is_isometric else "hex", names))
+
     def size(self):
         return self.xsize * self.ysize
 
