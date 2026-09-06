@@ -22,6 +22,10 @@ from fcbot import state
 
 STRIP_MARKUP = re.compile(r"\[/?c[^\]]*\]")
 
+#: How to launch a matching 3.2 client. Ubuntu 24.04 has no freeciv 3.2
+#: client in apt, so the Flathub package is the one that works here.
+DEFAULT_CLIENT = "flatpak run org.freeciv.gtk322"
+
 
 def log(msg):
     print(msg, flush=True)
@@ -38,7 +42,7 @@ def pick_nation(game, wanted):
 def humans_ready(game, bot_player):
     """True once at least one other connected human player is ready."""
     for pn, player in game.players.items():
-        if pn == bot_player or player.get("ai"):
+        if pn == bot_player or game.is_ai(player):
             continue
         if player.get("is_connected") and player.get("is_ready"):
             return True
@@ -47,7 +51,7 @@ def humans_ready(game, bot_player):
 
 def other_humans(game, bot_player):
     return [p for pn, p in game.players.items()
-            if pn != bot_player and not p.get("ai") and p.get("is_connected")]
+            if pn != bot_player and not game.is_ai(p) and p.get("is_connected")]
 
 
 def cmd_host(args):
@@ -83,7 +87,7 @@ def cmd_host(args):
     log("=" * 68)
     log(" Join the game with your own client:")
     log("")
-    log("     freeciv-gtk2 -a -p %d -s localhost" % args.port)
+    log("     %s -a -p %d -s localhost" % (args.client, args.port))
     log("")
     log(" ...then pick a nation and click 'Ready'. The game starts")
     log(" automatically once you are ready.")
@@ -206,6 +210,8 @@ def main(argv=None):
                       help="nation for Claude to play")
     host.add_argument("--leader", default="Claudius")
     host.add_argument("--username", default="claude")
+    host.add_argument("--client", default=DEFAULT_CLIENT,
+                      help="command shown for joining with your own client")
     host.add_argument("--target-cities", type=int, default=6)
     host.add_argument("--timeout", type=int, default=0,
                       help="server turn timeout in seconds (0 = untimed)")

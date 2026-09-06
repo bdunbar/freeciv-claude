@@ -1,4 +1,5 @@
-"""Byte-level encoders/decoders mirroring freeciv's common/dataio.c.
+"""Byte-level encoders/decoders mirroring freeciv's
+common/networking/dataio_raw.c (3.2).
 
 All multi-byte integers are network byte order (big endian).
 """
@@ -72,24 +73,31 @@ class DataIn(object):
         length = self.get_uint8()
         return [(self.get_uint8(), self.get_uint8()) for _ in range(length)]
 
-    def _get_list(self, kind):
-        stop, maxlen = constants.LIST_STOP[kind]
-        out = []
-        for _ in range(maxlen):
-            v = self.get_uint8()
-            out.append(v)
-            if v == stop:
-                break
-        return out
+    # estring is the escaped-string variant; on the raw wire it is a string
+    # (dataio_raw.h: #define dio_get_estring_raw dio_get_string_raw).
+    get_estring = get_string
 
-    def get_tech_list(self):
-        return self._get_list("tech_list")
+    def get_cm_parameter(self):
+        o = constants.CONSTANTS["O_LAST"]
+        return {
+            "minimal_surplus": [self.get_sint16() for _ in range(o)],
+            "max_growth": self.get_bool8(),
+            "require_happy": self.get_bool8(),
+            "allow_disorder": self.get_bool8(),
+            "allow_specialists": self.get_bool8(),
+            "factor": [self.get_uint16() for _ in range(o)],
+            "happy_factor": self.get_uint16(),
+        }
 
-    def get_unit_list(self):
-        return self._get_list("unit_list")
-
-    def get_building_list(self):
-        return self._get_list("building_list")
+    def get_unit_order(self):
+        return {
+            "order": self.get_uint8(),
+            "activity": self.get_uint8(),
+            "target": self.get_sint32(),
+            "sub_target": self.get_sint16(),
+            "action": self.get_uint8(),
+            "dir": self.get_sint8(),
+        }
 
     def get_requirement(self):
         return {
@@ -163,23 +171,27 @@ class DataOut(object):
             self.put_uint8(kind)
             self.put_uint8(number)
 
-    def _put_list(self, kind, values):
-        stop, maxlen = constants.LIST_STOP[kind]
-        values = list(values or [])
-        for i in range(maxlen):
-            v = values[i] if i < len(values) else stop
-            self.put_uint8(v)
-            if v == stop:
-                break
+    put_estring = put_string
 
-    def put_tech_list(self, v):
-        self._put_list("tech_list", v)
+    def put_cm_parameter(self, p):
+        o = constants.CONSTANTS["O_LAST"]
+        for i in range(o):
+            self.put_sint16(p["minimal_surplus"][i])
+        self.put_bool8(p["max_growth"])
+        self.put_bool8(p["require_happy"])
+        self.put_bool8(p["allow_disorder"])
+        self.put_bool8(p["allow_specialists"])
+        for i in range(o):
+            self.put_uint16(p["factor"][i])
+        self.put_uint16(p["happy_factor"])
 
-    def put_unit_list(self, v):
-        self._put_list("unit_list", v)
-
-    def put_building_list(self, v):
-        self._put_list("building_list", v)
+    def put_unit_order(self, o):
+        self.put_uint8(o["order"])
+        self.put_uint8(o["activity"])
+        self.put_sint32(o["target"])
+        self.put_sint16(o["sub_target"])
+        self.put_uint8(o["action"])
+        self.put_sint8(o["dir"])
 
     def put_requirement(self, r):
         self.put_uint8(r["type"])

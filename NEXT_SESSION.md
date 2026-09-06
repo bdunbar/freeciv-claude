@@ -14,11 +14,13 @@ Labelling scripted rules "Claude" misled Brian once already.
 
 ## What exists and works
 
-The whole client seat is built and verified against freeciv-server 2.6.6:
+The whole client seat is built and verified against freeciv-server 3.2.5
+(ported from 2.6.6 after the Pop!_OS 24.04 upgrade; see README):
 
-* `fcbot/protocol/` -- freeciv 2.6 wire protocol from `packets.def`
+* `fcbot/protocol/` -- freeciv 3.2 wire protocol from `packets.def`
   (framing, zlib chunks, delta compression, capability negotiation).
-  All 185 packets parse; 2371 packets of live traffic decoded clean.
+  All 203 packets parse and round-trip; 3600+ packets of live 3.2.5
+  traffic decoded clean.
 * `fcbot/state.py` -- fog-limited game state from the packet stream.
 * `fcbot/client.py` -- the action set: `goto`, `do_activity`, `build_city`,
   `change_production`, `buy_production`, `set_research`, `set_research_goal`,
@@ -26,7 +28,7 @@ The whole client seat is built and verified against freeciv-server 2.6.6:
 * `fcbot/fcmap.py` / `fcbot/fcpath.py` -- topology (iso coords!) and
   pathfinding over known tiles.
 * `fcbot/server.py` -- launches and drives freeciv-server.
-* `tests/test_protocol.py` -- 10 tests, all passing.
+* `tests/test_protocol.py` -- 17 tests, all passing.
 
 **Nothing new is needed in the protocol layer.** This is a UI problem now:
 get the situation to the model, get decisions back.
@@ -123,16 +125,22 @@ is missed or repeated.
 
 * `fcgame.py` prints `research: goal -> goal set to X` -- the word "goal"
   appears twice. Cosmetic, in `agent.py` `manage_research` plus the caller.
-* Auto mode logs in as `claude`; should be `fcbot`.
+* Auto mode logs in as `claude`; should be `fcbot`. (Still true after the
+  3.2 port -- `--username` still defaults to `claude`.)
 * The agent never wages war or does diplomacy. Irrelevant once interactive
   mode lands, but it is why auto mode is a weak opponent.
 
 ## Environment notes
 
-* Freeciv sources were unpacked at `/tmp/freeciv-2.6.6` and will be gone after
-  a reboot. Nothing depends on them: `packets.def` is vendored at
-  `fcbot/protocol/spec/packets.def`. To get the sources back for reference:
-  `apt-get source freeciv`.
+* The server and the human's client both come from the Flathub package
+  `org.freeciv.gtk322` (3.2.5). `fcbot/server.py` runs the bundled
+  `freeciv-server` via `flatpak run --command=freeciv-server`, passing
+  `--filesystem=<savedir>` because the sandbox otherwise only maps
+  `~/.freeciv`.
+* Nothing depends on having the freeciv sources locally: `packets.def` is
+  vendored at `fcbot/protocol/spec/packets.def`. To get the 3.2.5 sources
+  back for reference:
+  `curl -L https://github.com/freeciv/freeciv/archive/refs/tags/R3_2_5.tar.gz | tar xz`
 * Careful with `pkill -f` in this repo: patterns like `freeciv-server -p 55`
   match the invoking shell's own command line and kill it. Use
   `pkill -x freeciv-server`.

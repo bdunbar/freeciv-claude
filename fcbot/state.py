@@ -7,39 +7,68 @@ player can see, so this state is exactly what a human client would show.
 from . import chat as chatmod
 from . import fcmap
 
-# player_num sentinel meaning "no player attached"
-NO_PLAYER = 160
+# player_num sentinel meaning "no player attached": the slot count itself.
+NO_PLAYER = 512
 
-# enum known_type
+# enum known_type (common/tile.h)
 TILE_UNKNOWN, TILE_KNOWN_UNSEEN, TILE_KNOWN_SEEN = 0, 1, 2
 
-# enum unit_activity (common/fc_types.h; values are wire-visible)
+# enum unit_activity (common/fc_types.h; values are wire-visible).
+# 3.2 renumbered this: ACTIVITY_POLLUTION/FALLOUT collapsed into
+# ACTIVITY_CLEAN, and ACTIVITY_CULTIVATE / ACTIVITY_PLANT replaced the old
+# "irrigate/mine changes terrain" overloading.
 ACTIVITY_IDLE = 0
-ACTIVITY_POLLUTION = 1
-ACTIVITY_MINE = 3
-ACTIVITY_IRRIGATE = 4
-ACTIVITY_FORTIFIED = 5
-ACTIVITY_SENTRY = 7
-ACTIVITY_PILLAGE = 9
-ACTIVITY_GOTO = 10
-ACTIVITY_EXPLORE = 11
-ACTIVITY_TRANSFORM = 12
-ACTIVITY_FORTIFYING = 15
-ACTIVITY_FALLOUT = 16
-ACTIVITY_BASE = 18
-ACTIVITY_GEN_ROAD = 19
-ACTIVITY_CONVERT = 20
+ACTIVITY_CULTIVATE = 1
+ACTIVITY_MINE = 2
+ACTIVITY_IRRIGATE = 3
+ACTIVITY_FORTIFIED = 4
+ACTIVITY_SENTRY = 5
+ACTIVITY_PILLAGE = 6
+ACTIVITY_GOTO = 7
+ACTIVITY_EXPLORE = 8
+ACTIVITY_TRANSFORM = 9
+ACTIVITY_FORTIFYING = 10
+ACTIVITY_CLEAN = 11
+ACTIVITY_BASE = 12
+ACTIVITY_GEN_ROAD = 13
+ACTIVITY_CONVERT = 14
+ACTIVITY_PLANT = 15
 
-# enum unit_orders (common/unit.h)
+# enum unit_orders (common/unit.h). 3.2 folded the per-purpose orders
+# (build city, disband, trade route, ...) into ORDER_PERFORM_ACTION plus an
+# action id from enum gen_action.
 ORDER_MOVE = 0
 ORDER_ACTIVITY = 1
 ORDER_FULL_MP = 2
-ORDER_BUILD_CITY = 3
-ORDER_DISBAND = 4
-ORDER_BUILD_WONDER = 5
-ORDER_TRADE_ROUTE = 6
-ORDER_HOMECITY = 7
-ORDER_ACTION_MOVE = 8
+ORDER_ACTION_MOVE = 3
+ORDER_PERFORM_ACTION = 4
+
+# enum gen_action (common/actions.h); only the ones we issue.
+ACTION_FOUND_CITY = 27
+ACTION_JOIN_CITY = 28
+ACTION_DISBAND_UNIT = 39
+ACTION_HOME_CITY = 40
+ACTION_FORTIFY = 61
+ACTION_CULTIVATE = 62
+ACTION_PLANT = 63
+ACTION_TRANSFORM_TERRAIN = 64
+ACTION_ROAD = 65
+ACTION_IRRIGATE = 66
+ACTION_MINE = 67
+ACTION_BASE = 68
+ACTION_PILLAGE = 69
+ACTION_CLEAN = 119
+
+# bv_plr_flags bits (enum plr_flag_id). 3.2 moved PLAYER_INFO's `ai`
+# boolean into this flag vector.
+PLRF_AI = 1 << 0
+PLRF_SCENARIO_RESERVED = 1 << 1
+PLRF_FIRST_CITY = 1 << 2
+
+# enum server_side_agent (common/unit.h): what the server drives for us.
+SSA_NONE = 0
+SSA_AUTOSETTLER = 1
+SSA_AUTOEXPLORE = 2
 
 # universals_n kinds used by city production
 VUT_IMPROVEMENT = 3
@@ -150,6 +179,10 @@ class GameState(object):
                 out[cid] = c
         return out
 
+    def is_ai(self, player):
+        """Whether a PLAYER_INFO belongs to a computer player."""
+        return bool(player.get("flags", 0) & PLRF_AI)
+
     def chat_since(self, index=0):
         """Messages a person typed, from `index` onward."""
         return [m for m in self.messages[index:] if m.is_chat]
@@ -196,7 +229,9 @@ class GameState(object):
 # -- individual handlers ------------------------------------------------
 
 def _h_map_info(s, v):
-    s.topo = fcmap.Topology(v["xsize"], v["ysize"], v["topology_id"])
+    # 3.2 split wrapping out of topology_id into its own wrap_id.
+    s.topo = fcmap.Topology(v["xsize"], v["ysize"], v["topology_id"],
+                            v.get("wrap_id", 0))
 
 
 def _h_tile_info(s, v):
@@ -258,8 +293,7 @@ def _h_start_phase(s, v):
 
 
 def _h_new_year(s, v):
-    # year16 vs year32 depends on the negotiated 'year32' capability.
-    s.year = v.get("year32", v.get("year16", s.year))
+    s.year = v.get("year", s.year)
     s.turn = v["turn"]
 
 
@@ -269,7 +303,7 @@ def _h_begin_turn(s, v):
 
 def _h_game_info(s, v):
     s.turn = v.get("turn", s.turn)
-    s.year = v.get("year32", v.get("year16", s.year))
+    s.year = v.get("year", s.year)
     s.game_started = v.get("is_new_game") is False or s.game_started
 
 

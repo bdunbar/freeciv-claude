@@ -17,7 +17,7 @@ class SpecTest(unittest.TestCase):
         self.by_number, self.by_name = pdef.parse(_find_packets_def())
 
     def test_all_packets_parse(self):
-        self.assertEqual(len(self.by_number), 185)
+        self.assertEqual(len(self.by_number), 203)
 
     def test_every_size_resolves(self):
         for packet in self.by_number.values():
@@ -36,7 +36,7 @@ class SpecTest(unittest.TestCase):
 class RoundTripTest(unittest.TestCase):
     def setUp(self):
         self.by_number, _ = pdef.parse(_find_packets_def())
-        self.caps = {"year32", "techloss_forgiveness"}
+        self.caps = set(constants.NETWORK_CAPSTRING.replace("+", " ").split())
 
     def test_blank_packets_round_trip(self):
         for number, packet in sorted(self.by_number.items()):
@@ -62,39 +62,69 @@ class RoundTripTest(unittest.TestCase):
         self.assertIsNone(codec.encode(number, values))
 
     def test_capability_changes_field_layout(self):
-        """year32 swaps which year field is on the wire (and its width)."""
+        """tu32 swaps which tech_upkeep field is on the wire (and its width)."""
         number = next(n for n, p in self.by_number.items()
-                      if p.name == "PACKET_NEW_YEAR")
-        with_cap = Codec(self.by_number, {"year32"})
+                      if p.name == "PACKET_PLAYER_INFO")
+        with_cap = Codec(self.by_number, {"tu32"})
         without = Codec(self.by_number, set())
         names_with = {f.name for f in with_cap._fields_of(self.by_number[number])}
         names_without = {f.name for f in without._fields_of(self.by_number[number])}
-        self.assertIn("year32", names_with)
-        self.assertNotIn("year16", names_with)
-        self.assertIn("year16", names_without)
-        self.assertNotIn("year32", names_without)
+        self.assertIn("tech_upkeep_32", names_with)
+        self.assertNotIn("tech_upkeep_16", names_with)
+        self.assertIn("tech_upkeep_16", names_without)
+        self.assertNotIn("tech_upkeep_32", names_without)
 
 
 class TopologyTest(unittest.TestCase):
     def test_square_roundtrip(self):
-        topo = fcmap.Topology(20, 10, fcmap.TF_WRAPX)
+        topo = fcmap.Topology(20, 10, 0, fcmap.WRAP_X)
         for index in range(topo.size()):
             self.assertEqual(topo.map_to_index(*topo.index_to_map(index)), index)
 
     def test_isometric_roundtrip(self):
-        topo = fcmap.Topology(36, 48, fcmap.TF_WRAPX | fcmap.TF_ISO)
+        topo = fcmap.Topology(36, 48, fcmap.TF_ISO, fcmap.WRAP_X)
         for index in range(topo.size()):
             self.assertEqual(topo.map_to_index(*topo.index_to_map(index)), index)
 
     def test_steps_are_reversible(self):
-        topo = fcmap.Topology(36, 48, fcmap.TF_WRAPX | fcmap.TF_ISO)
+        topo = fcmap.Topology(36, 48, fcmap.TF_ISO, fcmap.WRAP_X)
         for index in (0, 100, 871, 1727):
             for direction, neighbour in topo.neighbours(index):
                 back = topo.step(neighbour, fcmap.DIR_REVERSE[direction])
                 self.assertEqual(back, index)
 
+    def test_iso_hex_roundtrip(self):
+        """freeciv 3.2 defaults to iso-hex, so it has to work."""
+        topo = fcmap.Topology(36, 48, fcmap.TF_ISO | fcmap.TF_HEX,
+                              fcmap.WRAP_X)
+        for index in range(topo.size()):
+            self.assertEqual(topo.map_to_index(*topo.index_to_map(index)), index)
+
+    def test_iso_hex_drops_the_ne_sw_diagonal(self):
+        """Sending a direction the topology lacks gets the whole orders
+        packet rejected, so neighbours() must never offer one."""
+        topo = fcmap.Topology(36, 48, fcmap.TF_ISO | fcmap.TF_HEX,
+                              fcmap.WRAP_X)
+        self.assertEqual(topo.valid_directions(), (0, 1, 3, 4, 6, 7))
+        for index in (0, 100, 871, 1727):
+            offered = {d for d, _ in topo.neighbours(index)}
+            self.assertNotIn(fcmap.DIR8_NORTHEAST, offered)
+            self.assertNotIn(fcmap.DIR8_SOUTHWEST, offered)
+        self.assertIsNone(topo.step(500, fcmap.DIR8_NORTHEAST))
+
+    def test_hex_distance_has_no_missing_diagonal(self):
+        square = fcmap.Topology(36, 48, fcmap.TF_ISO, fcmap.WRAP_X)
+        hexo = fcmap.Topology(36, 48, fcmap.TF_ISO | fcmap.TF_HEX,
+                              fcmap.WRAP_X)
+        # A vector along the diagonal iso-hex lacks costs both steps.
+        a = hexo.native_to_index(10, 10)
+        b = hexo.map_to_index(*[c + d for c, d in
+                                zip(hexo.index_to_map(a), (-2, 2))])
+        self.assertEqual(square.real_distance(a, b), 2)
+        self.assertEqual(hexo.real_distance(a, b), 4)
+
     def test_direction_to_matches_step(self):
-        topo = fcmap.Topology(36, 48, fcmap.TF_WRAPX | fcmap.TF_ISO)
+        topo = fcmap.Topology(36, 48, fcmap.TF_ISO, fcmap.WRAP_X)
         for _, neighbour in topo.neighbours(500):
             d = topo.direction_to(500, neighbour)
             self.assertIsNotNone(d)

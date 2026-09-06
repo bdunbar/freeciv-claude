@@ -5,20 +5,70 @@ starting the game. That is also how the human player's seat gets reserved.
 """
 
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
 
+#: The protocol layer is generated from freeciv 3.2's packets.def, so the
+#: server has to be a 3.2 one. Ubuntu 24.04 ships 3.1 in apt; the Flathub
+#: client package bundles a matching 3.2 freeciv-server, so prefer that.
+REQUIRED_VERSION = (3, 2)
+FLATPAK_APP = "org.freeciv.gtk322"
 SERVER_BIN = "/usr/games/freeciv-server"
+
+_VERSION_RE = re.compile(r"server for Freeciv version (\d+)\.(\d+)\.(\d+)")
+
+
+def _flatpak_installed(app=FLATPAK_APP):
+    if not shutil.which("flatpak"):
+        return False
+    try:
+        out = subprocess.run(["flatpak", "info", app],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0
+
+
+def default_command(savedir):
+    """The argv prefix that runs a freeciv 3.2 server.
+
+    The flatpak sandbox only maps ~/.freeciv by default, so the save
+    directory is handed in explicitly rather than relying on a persistent
+    `flatpak override`.
+    """
+    if _flatpak_installed():
+        return ["flatpak", "run", "--command=freeciv-server",
+                "--filesystem=%s" % savedir, FLATPAK_APP]
+    for candidate in (SERVER_BIN, shutil.which("freeciv-server")):
+        if candidate and os.path.exists(candidate):
+            return [candidate]
+    raise RuntimeError(
+        "no freeciv-server found: install the %s flatpak "
+        "(flatpak install flathub %s) or a freeciv %d.%d server"
+        % (FLATPAK_APP, FLATPAK_APP, REQUIRED_VERSION[0], REQUIRED_VERSION[1]))
 
 
 class Server(object):
     def __init__(self, port=5556, savedir=None, ruleset="classic",
-                 binary=SERVER_BIN, log_path=None):
+                 binary=None, log_path=None):
         self.port = port
         self.ruleset = ruleset
-        self.binary = binary
-        self.savedir = savedir or os.path.join(os.getcwd(), "games")
+        # Absolute: flatpak's --filesystem= rejects relative paths, and the
+        # sandboxed server does not share our working directory anyway.
+        self.savedir = os.path.abspath(savedir or "games")
+        # A string keeps the old single-binary form working; the default is
+        # a full argv because the flatpak needs `flatpak run ...` in front.
+        if binary is None:
+            self.command_prefix = None      # resolved in start(), needs savedir
+        elif isinstance(binary, str):
+            self.command_prefix = [binary]
+        else:
+            self.command_prefix = list(binary)
+        self.version = None
         self.log_path = log_path
         self.proc = None
         self.output = []
@@ -26,8 +76,11 @@ class Server(object):
 
     def start(self, extra_args=()):
         os.makedirs(self.savedir, exist_ok=True)
-        args = [self.binary, "-p", str(self.port), "-s", self.savedir,
-                "--Announce", "none"]
+        if self.command_prefix is None:
+            self.command_prefix = default_command(self.savedir)
+        args = list(self.command_prefix)
+        args += ["-p", str(self.port), "-s", self.savedir,
+                 "--Announce", "none"]
         args.extend(extra_args)
         self.proc = subprocess.Popen(
             args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -35,7 +88,22 @@ class Server(object):
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
         self._wait_for_line("Now accepting new client connections", 30)
+        self._check_version()
         return self
+
+    def _check_version(self):
+        for line in self.output:
+            m = _VERSION_RE.search(line)
+            if m:
+                self.version = tuple(int(g) for g in m.groups())
+                break
+        if self.version and self.version[:2] != REQUIRED_VERSION:
+            self.stop()
+            raise RuntimeError(
+                "freeciv-server is %d.%d.%d but the protocol layer speaks "
+                "%d.%d; %s"
+                % (self.version + REQUIRED_VERSION
+                   + (" ".join(self.command_prefix),)))
 
     def _read_output(self):
         log = open(self.log_path, "a") if self.log_path else None

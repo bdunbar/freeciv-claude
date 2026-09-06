@@ -7,15 +7,17 @@ Delta rules (mirroring common/generate_packets.py):
     all key fields, then only those non-key fields whose bit is set.
   * Scalar bools are *folded into the bitvector*: the bit carries the value
     itself and no bytes are written for the field.
-  * Arrays flagged 'diff' are sent as (uint8 index, value) pairs ending
-    with index 255.
+  * Arrays flagged 'diff' are sent as (index, value) pairs terminated by a
+    sentinel index equal to the array's transmitted length. The index is a
+    uint8 when that length fits in one byte and a uint16 otherwise.
 """
 
 from . import constants
 from .dataio import DataIn, DataOut
 
-_ARR_WHOLE = ("string", "bit_string", "city_map",
-              "tech_list", "unit_list", "building_list")
+# Types whose one-dimensional "array" is a single wire value, not a vector:
+# a string field is declared char[N] but travels as one NUL-terminated string.
+_ARR_WHOLE = ("string", "estring")
 
 
 def _bv_bytes(nbits):
@@ -24,7 +26,9 @@ def _bv_bytes(nbits):
 
 
 def _is_folded_bool(field):
-    return field.public_type == "bool" and not field.is_array
+    # generate_packets.py folds any non-array bool* dataio type into the
+    # `fields` bitvector, since it carries no more than the "differs" bit.
+    return field.dataio_type.startswith("bool") and not field.is_array
 
 
 class Codec(object):
@@ -54,17 +58,35 @@ class Codec(object):
         return keys, others
 
     # -- defaults ------------------------------------------------------
+    def _spread(self, field, base):
+        """Shape a scalar default into this field's array dimensions."""
+        make = (lambda: dict(base)) if isinstance(base, dict) else (lambda: base)
+        n1 = constants.resolve_size(field.sizes[0][0])
+        if len(field.sizes) == 1:
+            return [make() for _ in range(n1)]
+        n2 = constants.resolve_size(field.sizes[1][0])
+        return [[make() for _ in range(n2)] for _ in range(n1)]
+
     def zero(self, field):
         if field.dataio_type == "memory":
             return b"\0" * constants.resolve_size(field.sizes[0][0])
-        if field.dataio_type == "string":
+        if field.dataio_type in ("string", "estring"):
             if len(field.sizes) >= 2:
                 return [""] * constants.resolve_size(field.sizes[0][0])
             return ""
         if field.dataio_type == "worklist":
             return []
-        if field.dataio_type in ("tech_list", "unit_list", "building_list"):
-            return []
+        if field.dataio_type == "cm_parameter":
+            o = constants.CONSTANTS["O_LAST"]
+            base = {"minimal_surplus": [0] * o, "max_growth": False,
+                    "require_happy": False, "allow_disorder": False,
+                    "allow_specialists": False, "factor": [0] * o,
+                    "happy_factor": 0}
+            return base if not field.sizes else self._spread(field, base)
+        if field.dataio_type == "unit_order":
+            base = {"order": 0, "activity": 0, "target": 0,
+                    "sub_target": 0, "action": 0, "dir": 0}
+            return base if not field.sizes else self._spread(field, base)
         if field.dataio_type == "requirement":
             base = {"type": 0, "value": 0, "range": 0,
                     "survives": False, "present": False, "quiet": False}
@@ -132,10 +154,16 @@ class Codec(object):
         if len(field.sizes) == 1:
             cur = list(old.get(field.name) or self.zero(field))
             if field.diff:
+                n = self._count(field, 0, values)
+                get_index = din.get_uint8 if n <= 0xFF else din.get_uint16
                 while True:
-                    idx = din.get_uint8()
-                    if idx == 255:
+                    idx = get_index()
+                    if idx == n:
                         break
+                    if idx > n:
+                        raise ValueError(
+                            "array diff index %d out of range for %s.%s (%d)"
+                            % (idx, field.name, field.dataio_type, n))
                     cur[idx] = self._get_one(din, field)
                 return cur
             n = self._count(field, 0, values)
@@ -145,7 +173,7 @@ class Codec(object):
 
         # two dimensions
         n1 = self._count(field, 0, values)
-        if t == "string":
+        if t in ("string", "estring"):
             # A 2D string field is a vector of strings, not a grid of chars:
             # the second dimension is just each string's buffer size.
             cur = list(old.get(field.name) or self.zero(field))
@@ -177,11 +205,12 @@ class Codec(object):
             if field.diff:
                 prev = old.get(field.name) or self.zero(field)
                 n = self._count(field, 0, values)
+                put_index = dout.put_uint8 if n <= 0xFF else dout.put_uint16
                 for i in range(n):
                     if i >= len(prev) or prev[i] != value[i]:
-                        dout.put_uint8(i)
+                        put_index(i)
                         self._put_one(dout, field, value[i])
-                dout.put_uint8(255)
+                put_index(n)
                 return
             n = self._count(field, 0, values)
             for i in range(n):
@@ -189,7 +218,7 @@ class Codec(object):
             return
 
         n1 = self._count(field, 0, values)
-        if t == "string":
+        if t in ("string", "estring"):
             for i in range(n1):
                 dout.put_string(value[i])
             return

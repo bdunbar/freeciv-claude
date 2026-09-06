@@ -69,20 +69,22 @@ class Agent(object):
     def knows_tech(self, tech_id):
         return self.tech_state(tech_id) == TECH_KNOWN
 
+    def required_techs(self, item, field="reqs", count_field="reqs_count"):
+        """Advances a requirement vector insists on. 3.2 replaced the old
+        single `tech_requirement` field with these vectors."""
+        reqs = item.get(field) or []
+        return [r["value"] for r in reqs[:item.get(count_field, 0)]
+                if r["type"] == REQ_ADVANCE and r["present"]]
+
     def can_build_unit(self, utype):
-        req = utype.get("tech_requirement", 0)
-        # A_NONE (0) means no requirement in the classic ruleset.
-        return req == 0 or self.knows_tech(req)
+        return all(self.knows_tech(t) for t in
+                   self.required_techs(utype, "build_reqs", "build_reqs_count"))
 
     def can_build_improvement(self, city, impr):
         built = city.get("improvements", 0)
         if built >> impr["id"] & 1:
             return False
-        for req in impr.get("reqs", [])[:impr.get("reqs_count", 0)]:
-            if req["type"] == REQ_ADVANCE and req["present"]:
-                if not self.knows_tech(req["value"]):
-                    return False
-        return True
+        return all(self.knows_tech(t) for t in self.required_techs(impr))
 
     def unit_role(self, unit):
         utype = self.game.ruleset.units.get(unit["type"], {})
@@ -186,7 +188,9 @@ class Agent(object):
             self._settler_targets.pop(uid, None)
             return "founding %s" % name
         ok = client.goto(uid, target,
-                         then={"order": state.ORDER_BUILD_CITY})
+                         then={"order": state.ORDER_PERFORM_ACTION,
+                               "action": state.ACTION_FOUND_CITY,
+                               "target": target})
         if not ok:
             self._settler_targets[uid] = None
             client.do_activity(uid, state.ACTIVITY_SENTRY)
@@ -195,12 +199,14 @@ class Agent(object):
 
     def handle_worker(self, unit):
         # The server's own auto-worker logic, same as the GTK client's button.
-        self.client.conn.send("PACKET_UNIT_AUTOSETTLERS", unit_id=unit["id"])
+        if unit["ssa_controller"] != state.SSA_AUTOSETTLER:
+            self.client.auto_settler(unit["id"])
         return "auto"
 
     def handle_explorer(self, unit):
-        if unit["activity"] != state.ACTIVITY_EXPLORE:
-            self.client.do_activity(unit["id"], state.ACTIVITY_EXPLORE)
+        # 3.2 runs exploration as a server-side agent, not an activity.
+        if unit["ssa_controller"] != state.SSA_AUTOEXPLORE:
+            self.client.explore(unit["id"])
         return "exploring"
 
     def handle_military(self, unit):
@@ -293,7 +299,9 @@ class Agent(object):
         tech = self.game.ruleset.techs.get(tech_id)
         if tech is None:
             return None
-        for req in list(tech.get("req", []))[:2] + [tech.get("root_req", 0)]:
+        prereqs = self.required_techs(tech, "research_reqs",
+                                      "research_reqs_count")
+        for req in prereqs + [tech.get("root_req", 0)]:
             if not req:
                 continue
             step = self.next_research_step(req, seen)

@@ -1,7 +1,7 @@
 """A real freeciv client: login, pregame setup, and issuing player actions.
 
-This speaks the same protocol as freeciv-gtk2, so the server applies exactly
-the same rules and fog of war to us as to any human player.
+This speaks the same protocol as freeciv-gtk3.22, so the server applies
+exactly the same rules and fog of war to us as to any human player.
 """
 
 import socket
@@ -9,6 +9,29 @@ import time
 
 from . import fcpath, state
 from .protocol.connection import Connection
+
+#: common/fc_types.h -- "no target of this kind".
+NO_TARGET = -1
+EXTRA_NONE = -1
+#: enum unit_activity's terminator; what a non-activity order carries.
+ACTIVITY_LAST = 16
+#: enum gen_action's "no action", which is ACTION_COUNT itself.
+ACTION_NONE = 125
+
+
+def _unit_order(o):
+    """Fill one unit_order struct the way client/goto.c does: every field
+    the order does not use carries its explicit "none" value."""
+    order = o.get("order", state.ORDER_MOVE)
+    return {
+        "order": order,
+        "dir": o.get("dir", 0),
+        "activity": o.get("activity", ACTIVITY_LAST)
+                    if order == state.ORDER_ACTIVITY else ACTIVITY_LAST,
+        "target": o.get("target", NO_TARGET),
+        "sub_target": o.get("sub_target", NO_TARGET),
+        "action": o.get("action", ACTION_NONE),
+    }
 
 
 class Client(object):
@@ -106,14 +129,15 @@ class Client(object):
 
     # -- in-game actions -----------------------------------------------
     def send_orders(self, unit_id, orders, dest_tile=None):
-        """orders: list of dicts with keys order/dir/activity/target."""
+        """orders: list of dicts with keys order/dir/activity/target/
+        sub_target/action. 3.2 sends these as unit_order structs rather than
+        the parallel arrays 2.6 used."""
         unit = self.game.units.get(unit_id)
         if unit is None:
             return False
         n = len(orders)
         if n == 0:
             return False
-        pad = lambda key, default: [o.get(key, default) for o in orders]
         return self.conn.send(
             "PACKET_UNIT_ORDERS",
             unit_id=unit_id,
@@ -121,10 +145,7 @@ class Client(object):
             length=n,
             repeat=False,
             vigilant=False,
-            orders=pad("order", state.ORDER_MOVE),
-            dir=pad("dir", 0),
-            activity=pad("activity", state.ACTIVITY_IDLE),
-            target=pad("target", 0),
+            orders=[_unit_order(o) for o in orders],
             dest_tile=dest_tile if dest_tile is not None else unit["tile"])
 
     def goto(self, unit_id, dest_tile, then=None):
@@ -149,13 +170,39 @@ class Client(object):
             return False
         return self.send_orders(unit_id, orders, dest_tile=dest_tile)
 
-    def do_activity(self, unit_id, activity, target=0):
+    def do_activity(self, unit_id, activity, target=EXTRA_NONE):
+        if activity == state.ACTIVITY_EXPLORE:
+            # The 3.2 server refuses ACTIVITY_EXPLORE here and wants the
+            # server-side agent instead (unithand.c).
+            return self.explore(unit_id)
+        # Setting an activity by hand takes the unit back from any server
+        # agent, exactly as request_new_unit_activity_targeted() does.
+        self.set_server_side_agent(unit_id, state.SSA_NONE)
         self.conn.send("PACKET_UNIT_CHANGE_ACTIVITY",
                        unit_id=unit_id, activity=activity, target=target)
         return True
 
+    def do_action(self, unit_id, action_type, target_id,
+                  sub_target=NO_TARGET, name=""):
+        """3.2 routes one-off unit actions through the generalized action
+        system rather than a packet per action."""
+        self.conn.send("PACKET_UNIT_DO_ACTION",
+                       actor_id=unit_id, target_id=target_id,
+                       sub_tgt_id=sub_target, name=name,
+                       action_type=action_type)
+        return True
+
     def build_city(self, unit_id, name):
-        self.conn.send("PACKET_UNIT_BUILD_CITY", unit_id=unit_id, name=name)
+        unit = self.game.units.get(unit_id)
+        if unit is None:
+            return False
+        # ACTION_FOUND_CITY targets a tile, so the target is where we stand.
+        return self.do_action(unit_id, state.ACTION_FOUND_CITY,
+                              unit["tile"], name=name)
+
+    def set_server_side_agent(self, unit_id, agent):
+        self.conn.send("PACKET_UNIT_SERVER_SIDE_AGENT_SET",
+                       unit_id=unit_id, agent=agent)
         return True
 
     def change_production(self, city_id, kind, value):
@@ -199,5 +246,8 @@ class Client(object):
 
     def auto_settler(self, unit_id):
         """Hand a worker to the server's auto-worker logic."""
-        self.conn.send("PACKET_UNIT_AUTOSETTLERS", unit_id=unit_id)
-        return True
+        return self.set_server_side_agent(unit_id, state.SSA_AUTOSETTLER)
+
+    def explore(self, unit_id):
+        """Hand a unit to the server's auto-explore logic."""
+        return self.set_server_side_agent(unit_id, state.SSA_AUTOEXPLORE)

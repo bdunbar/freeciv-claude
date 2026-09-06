@@ -1,4 +1,4 @@
-"""Socket connection to a freeciv 2.6 server.
+"""Socket connection to a freeciv 3.2 server.
 
 Wire framing (common/packets.c):
   uint16 length (whole packet, header included) | uint8 type | body
@@ -7,6 +7,11 @@ Wire framing (common/packets.c):
   length >= 16385         -> compressed chunk, real length = length - 16385
 Compressed chunks are zlib streams holding several concatenated plain
 packets; they are inflated and fed back through the same parser.
+
+The type field is one byte during login and two bytes afterwards: freeciv
+widens it once the join is accepted, because 3.2 has packet numbers above
+255 (see packet_header_set() in common/networking/packets.c). The narrow
+header is fixed for backward compatibility and cannot be negotiated away.
 """
 
 import os
@@ -21,9 +26,12 @@ JUMBO_SIZE = 0xFFFF
 
 PACKETS_DEF_SEARCH = [
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "spec", "packets.def"),
-    "/tmp/freeciv-2.6.6/common/packets.def",
     "/usr/share/games/freeciv/packets.def",
 ]
+
+# Packet type width before and after a successful join.
+LOGIN_TYPE_SIZE = 1
+POST_LOGIN_TYPE_SIZE = 2
 
 
 def _find_packets_def(path=None):
@@ -47,6 +55,8 @@ class Connection(object):
         self.buf = bytearray()
         self.conn_id = None
         self.server_caps = ""
+        self.server_version = None
+        self.type_size = LOGIN_TYPE_SIZE
 
     def name_to_number(self, name):
         return self.by_name[name].number
@@ -69,8 +79,9 @@ class Connection(object):
         body = self.codec.encode(ptype, values)
         if body is None:
             return False        # delta: identical is-info packet, suppressed
-        length = len(body) + 3
-        header = length.to_bytes(2, "big") + ptype.to_bytes(1, "big")
+        length = len(body) + 2 + self.type_size
+        header = (length.to_bytes(2, "big")
+                  + ptype.to_bytes(self.type_size, "big"))
         self.sock.sendall(header + body)
         return True
 
@@ -110,10 +121,11 @@ class Connection(object):
                 self.buf[:0] = zlib.decompress(payload)
                 continue
 
-            if whole < 3:
+            head = 2 + self.type_size
+            if whole < head:
                 raise ValueError("corrupt packet stream (len=%d)" % whole)
-            ptype = self.buf[2]
-            body = bytes(self.buf[3:whole])
+            ptype = int.from_bytes(self.buf[2:head], "big")
+            body = bytes(self.buf[head:whole])
             del self.buf[:whole]
             return ptype, body
 
@@ -143,11 +155,18 @@ class Connection(object):
                   major_version=constants.MAJOR_VERSION,
                   minor_version=constants.MINOR_VERSION,
                   patch_version=constants.PATCH_VERSION)
-        # The server brackets its replies with PROCESSING_STARTED/FINISHED.
+        # The server brackets its replies with PROCESSING_STARTED/FINISHED,
+        # and 3.2 announces its own version first (connecthand.c sends
+        # PACKET_SERVER_INFO as soon as capabilities check out).
         while True:
             name, values = self.receive(timeout=30)
             if name == "PACKET_SERVER_JOIN_REPLY":
                 break
+            if name == "PACKET_SERVER_INFO":
+                self.server_version = (values["major_version"],
+                                       values["minor_version"],
+                                       values["patch_version"])
+                continue
             if name not in ("PACKET_PROCESSING_STARTED",
                             "PACKET_PROCESSING_FINISHED"):
                 raise RuntimeError("expected join reply, got %s" % name)
@@ -165,4 +184,7 @@ class Connection(object):
         self.codec.recv_cache.clear()
         self.codec.send_cache.clear()
         self.conn_id = values["conn_id"]
+        # The server widens the type field the moment it sends the accepted
+        # join reply, so every packet after this one uses the wide header.
+        self.type_size = POST_LOGIN_TYPE_SIZE
         return values
