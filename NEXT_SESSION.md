@@ -49,7 +49,17 @@ What the note said at the time:
 > respond to Brian as anything but a chat partner -- in a five-player game
 > that is most of the strategy space missing. Do this one first.
 
-### 2. The map overview blows up as the explorer wanders
+### 2. The map overview blows up as the explorer wanders  -- DONE (2026-09-07)
+
+The overview is now keyed on where we have *settled* (cities, or units
+before the first city) plus a margin, capped at radius 16; every render
+trims edge rows and columns that hold nothing but `?`; and units the
+overview does not reach get their own small close-up under
+`map.around_units_further_afield`. Checked live with three auto-explorers
+scattered across a size-1 map: the empire view stayed 10x11 while each
+wanderer got its own window.
+
+The original note:
 
 `observe._overview_radius()` takes the distance to the furthest *known*
 tile, so one explorer 20 tiles away turned the render into a 43x43 grid that
@@ -57,7 +67,17 @@ was ~90% `?`, with my actual territory in one corner. It should key off
 where my cities and units are, not the frontier -- or render the bounding
 box of known tiles instead of a square around one centre.
 
-### 3. Orders are not checked against the observation
+### 3. Orders are not checked against the observation  -- DONE (2026-09-07)
+
+`orders.py` now refuses a tech we already know or whose prerequisites are
+not in hand (pointing at `research_goal` instead), a work_tile outside the
+city radius, a specialist we do not have, and the diplomatic clauses the
+server would drop. Production that the city is too small to finish is sent
+with a NOTE rather than refused -- queueing it while the city grows is a
+real thing to want. Rate splits are *not* checked: a government's maximum
+rate is an effect and never reaches the client.
+
+The original note:
 
 I ordered research on Alphabet when the observation already listed it under
 `known`. The server dropped it silently (`handle_player_research` requires
@@ -66,7 +86,14 @@ was lost. `orders.py` can catch this class of thing cheaply: reject a tech
 in `known`, a unit or city id that is not ours, a rate split that a
 government forbids.
 
-### 4. The observation cannot see two things it needs
+### 4. The observation cannot see two things it needs  -- DONE (2026-09-07)
+
+Both added: `population_cost` on a city's unit production (with a warning
+when the city is too small), and `food.box` / `food.turns_to_grow` from
+`city_granary_size()`. Build costs now go through the game's `shieldbox`
+rather than the raw ruleset number.
+
+The original note:
 
 * **Unit population cost.** Settlers cost 2 pop here, so a city needs to be
   size 3. I learned that from an `E_CITY_CANTBUILD` event after buying a
@@ -77,7 +104,15 @@ government forbids.
   (once as seven turns when it was one). Add food box size and turns to
   grow.
 
-### 5. No city tile management
+### 5. No city tile management  -- DONE (2026-09-07)
+
+`work_tile`, `stop_working` and `specialist` on a city order, over
+`PACKET_CITY_MAKE_WORKER` / `_MAKE_SPECIALIST` / `_CHANGE_SPECIALIST`. The
+observation lists `worked_tiles` and `free_tiles` with each tile's terrain,
+resource and base output so there is something to choose between. Verified
+live: freeing one tile and claiming another moved the worked set.
+
+The original note:
 
 For ten turns straight the binding constraint was food, and there was no
 lever: no way to rearrange worked tiles or ask for a food-focused
@@ -92,10 +127,8 @@ the orders schema exposes neither.
   imported them at startup, and restarting it drops the client out of the
   game. Re-importing them per turn would make the seat tunable while
   playing, which is exactly when you notice what is wrong with it.
-* Shield overflow: while a build is blocked on population, shields pile up
-  past the cost and are wasted. I handled it by hand twice (slotting in a
-  Warriors, then a Workers). Worth surfacing in the observation as a
-  warning rather than leaving it to be noticed.
+* ~~Shield overflow~~ -- fixed 2026-09-07: it is a city `warning` now,
+  along with a blocked build, a negative food surplus and disorder.
 
 ## Still worth doing (from building it, before the game)
 
@@ -132,7 +165,7 @@ The whole client seat is built and verified against freeciv-server 3.2.5
 * `fcbot/server.py` -- launches and drives freeciv-server.
 * `fcbot/observe.py`, `fcbot/orders.py`, `fcbot/interactive.py` -- the
   model's seat (above).
-* `tests/` -- 59 tests, all passing.
+* `tests/` -- 81 tests, all passing.
 
 ## Where interactive mode lives
 

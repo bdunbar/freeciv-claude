@@ -348,9 +348,9 @@ class Agent(object):
         report = {"turn": game.turn, "year": game.year,
                   "units": {}, "cities": {}, "research": None}
 
-        goal = self.manage_research()
-        if goal:
-            report["research"] = "goal -> %s" % goal
+        research = self.manage_research()
+        if research:
+            report["research"] = research
 
         me = game.me
         if me and me.get("science") != self.strategy.science_rate:

@@ -65,6 +65,9 @@ coordinate; units, cities and techs are named, not numbered:
   {"city": 131, "build": ["unit", "Phalanx"]},
   {"city": 131, "worklist": [["improvement", "Temple"]]},
   {"city": 131, "buy": true},
+  {"city": 131, "work_tile": [15, 21]},
+  {"city": 131, "stop_working": [16, 21]},
+  {"city": 131, "specialist": {"from": "elvis", "to": "scientist"}},
   {"research_goal": "Currency"},
   {"rates": {"tax": 30, "luxury": 0, "science": 70}},
   {"government": "Monarchy"},
@@ -73,6 +76,24 @@ coordinate; units, cities and techs are named, not numbered:
   {"diplomacy": "accept", "with": "Brennus"}
 ]
 ```
+
+### Cities
+
+Each city reports the two boxes it is filling -- shields toward the current
+build, food toward the next citizen -- with `food.box` and
+`food.turns_to_grow` alongside `turns_to_completion`, so neither deadline has
+to be guessed. A unit's `population_cost` is on the production line, because
+a size-2 city can never finish Settlers however many shields it banks.
+
+`worked_tiles` and `free_tiles` are the lever for when food or shields are
+the binding constraint: `stop_working` frees a tile into a specialist and
+`work_tile` claims one, both by `[x, y]`. Tile output is the ruleset's flat
+terrain-plus-resource figure -- the right ordering to choose by, not the
+exact number a governor would report.
+
+Each city also carries `warnings`: the things that quietly cost turns if
+nobody notices them -- a build blocked on population, shields banked past
+the cost and being wasted, a negative food surplus, disorder.
 
 ### Diplomacy
 

@@ -76,6 +76,15 @@ class FakeClient(object):
     def chat(self, text):
         return self._record("chat", text)
 
+    def make_worker(self, cid, tile):
+        return self._record("make_worker", cid, tile)
+
+    def make_specialist(self, cid, tile):
+        return self._record("make_specialist", cid, tile)
+
+    def change_specialist(self, cid, from_id, to_id):
+        return self._record("change_specialist", cid, from_id, to_id)
+
     def init_meeting(self, other):
         return self._record("init_meeting", other)
 
@@ -108,15 +117,17 @@ def build_game():
 
     g.ruleset.terrains = {
         0: {"id": 0, "rule_name": "Grassland", "name": "Grassland",
-            "movement_cost": 1, "native_to": 0xFF},
+            "movement_cost": 1, "native_to": 0xFF,
+            "output": [2, 0, 0, 0, 0, 0]},
         1: {"id": 1, "rule_name": "Ocean", "name": "Ocean",
-            "movement_cost": 1, "native_to": 0},
+            "movement_cost": 1, "native_to": 0,
+            "output": [1, 0, 2, 0, 0, 0]},
     }
     g.ruleset.units = {
         5: {"id": 5, "rule_name": "Settlers", "name": "Settlers",
-            "unit_class_id": 0, "build_cost": 30},
+            "unit_class_id": 0, "build_cost": 30, "pop_cost": 2},
         6: {"id": 6, "rule_name": "Warriors", "name": "Warriors",
-            "unit_class_id": 0, "build_cost": 10},
+            "unit_class_id": 0, "build_cost": 10, "pop_cost": 0},
     }
     g.ruleset.buildings = {
         2: {"id": 2, "rule_name": "Temple", "name": "Temple",
@@ -132,13 +143,27 @@ def build_game():
                                  "name": "Monarchy"}}
     g.ruleset.nations = {9: {"id": 9, "rule_name": "Roman",
                              "name": "Roman", "adjective": "Roman"}}
-    g.ruleset.extras = {}
+    g.ruleset.extras = {40: {"id": 40, "rule_name": "Wheat"}}
+    g.ruleset.resources = {40: {"id": 40, "output": [2, 0, 0, 0, 0, 0]}}
+    g.ruleset.specialists = {
+        0: {"id": 0, "rule_name": "elvis", "plural_name": "Entertainers"},
+        1: {"id": 1, "rule_name": "scientist", "plural_name": "Scientists"},
+    }
+    # foodbox/shieldbox at 100 leave the ruleset costs alone; the granary
+    # table is the classic ruleset's.
+    g.game_info = {"foodbox": 100, "shieldbox": 100,
+                   "granary_food_ini": [20, 20, 20, 20, 20, 30, 30, 40],
+                   "granary_num_inis": 8, "granary_food_inc": 10}
     g.ruleset.terrain_control = {"move_fragments": 3}
 
     for index in range(144):
         g.tiles[index] = {"tile": index, "known": state.TILE_KNOWN_SEEN,
                           "terrain": 0, "resource": state.NO_RESOURCE,
-                          "extras": 0, "owner": 0}
+                          "extras": 0, "owner": 0, "worked": 0}
+    # Roma (tile 40) works two tiles, and there is wheat next door.
+    g.tiles[41]["worked"] = 21
+    g.tiles[52]["worked"] = 21
+    g.tiles[39]["resource"] = 40
 
     g.players = {
         0: {"playerno": 0, "name": "Claudius", "nation": 9, "government": 1,
@@ -169,7 +194,7 @@ def build_game():
              "shield_stock": 10, "production_kind": state.VUT_IMPROVEMENT,
              "production_value": 2, "buy_cost": 90, "worklist": [(6, 6)],
              "improvements": 0, "anarchy": 0, "rapture": 0,
-             "city_radius_sq": 5},
+             "city_radius_sq": 5, "specialists": [1, 0]},
     }
     return g
 
@@ -485,6 +510,176 @@ class DiplomacyObservationTest(unittest.TestCase):
         self.assertEqual(entry["contact_turns_left"], 14)
 
 
+class CityDetailTest(unittest.TestCase):
+    """The things the first live game could not see, and paid for."""
+
+    def setUp(self):
+        self.game = build_game()
+        self.obs = observe.observation(self.game)
+        self.city = self.obs["cities"][0]
+
+    def test_food_box_and_turns_to_grow(self):
+        # Size 3 in this granary table needs 20 food; 6 banked, +2 a turn.
+        self.assertEqual(self.city["food"]["box"], 20)
+        self.assertEqual(self.city["food"]["turns_to_grow"], 7)
+
+    def test_a_starving_city_says_how_long_it_has(self):
+        self.game.cities[21]["surplus"] = [-2, 5, 4, 0, 0, 0]
+        city = observe.observation(self.game)["cities"][0]
+        self.assertIn("shrinking", city["food"]["turns_to_grow"])
+        self.assertTrue(any("starving" in w for w in city["warnings"]))
+
+    def test_population_cost_is_visible_before_the_build_fails(self):
+        self.game.cities[21]["production_kind"] = state.VUT_UTYPE
+        self.game.cities[21]["production_value"] = 5      # Settlers, 2 pop
+        self.game.cities[21]["size"] = 2
+        city = observe.observation(self.game)["cities"][0]
+        self.assertEqual(city["population_cost"], 2)
+        self.assertTrue(any("cannot be completed until size 3" in w
+                            for w in city["warnings"]))
+
+    def test_banked_shields_above_the_cost_are_flagged(self):
+        self.game.cities[21]["shield_stock"] = 60         # Temple costs 40
+        city = observe.observation(self.game)["cities"][0]
+        self.assertTrue(any("wasted" in w for w in city["warnings"]))
+
+    def test_build_cost_follows_the_shieldbox_setting(self):
+        self.game.game_info["shieldbox"] = 200
+        city = observe.observation(self.game)["cities"][0]
+        self.assertEqual(city["build_cost"], 80)
+
+    def test_worked_and_free_tiles_are_listed_with_their_output(self):
+        self.assertEqual(len(self.city["worked_tiles"]), 2)
+        self.assertEqual(sorted(t["at"] for t in self.city["worked_tiles"]),
+                         sorted(list(self.game.topo.index_to_map(i))
+                                for i in (41, 52)))
+        best = self.city["free_tiles"][0]
+        # The wheat tile is 2 food of grassland plus 2 from the resource.
+        self.assertEqual(best["resource"], "Wheat")
+        self.assertEqual(best["output"]["food"], 4)
+
+    def test_free_tiles_exclude_what_another_city_works(self):
+        self.game.tiles[42]["worked"] = 99
+        city = observe.observation(self.game)["cities"][0]
+        self.assertNotIn(list(self.game.topo.index_to_map(42)),
+                         [t["at"] for t in city["free_tiles"]])
+
+    def test_specialists_are_named(self):
+        self.assertEqual(self.city["specialists"], {"Entertainers": 1})
+
+
+class CityTileOrderTest(unittest.TestCase):
+    def setUp(self):
+        self.game = build_game()
+        self.client = FakeClient(self.game)
+
+    def run_orders(self, o):
+        return orders.apply_orders(self.client, o)
+
+    def test_a_tile_can_be_put_to_work(self):
+        at = list(self.game.topo.index_to_map(39))
+        self.run_orders([{"city": 21, "work_tile": at}])
+        self.assertEqual(self.client.calls, [("make_worker", 21, 39)])
+
+    def test_a_worked_tile_can_be_freed(self):
+        at = list(self.game.topo.index_to_map(41))
+        self.run_orders([{"city": 21, "stop_working": at}])
+        self.assertEqual(self.client.calls, [("make_specialist", 21, 41)])
+
+    def test_tiles_outside_the_radius_are_refused(self):
+        results = self.run_orders([{"city": 21, "work_tile": [11, 11]}])
+        self.assertTrue(results[0].startswith("FAILED"))
+        self.assertIn("outside", results[0])
+        self.assertEqual(self.client.calls, [])
+
+    def test_the_centre_tile_cannot_be_reassigned(self):
+        at = list(self.game.topo.index_to_map(40))
+        results = self.run_orders([{"city": 21, "stop_working": at}])
+        self.assertIn("city centre", results[0])
+
+    def test_a_specialist_can_be_retrained(self):
+        self.run_orders([{"city": 21,
+                          "specialist": {"from": "Elvis", "to": "Scientist"}}])
+        self.assertEqual(self.client.calls, [("change_specialist", 21, 0, 1)])
+
+    def test_a_specialist_is_named_case_insensitively(self):
+        self.run_orders([{"city": 21,
+                          "specialist": {"from": "ELVIS", "to": "scientist"}}])
+        self.assertEqual(self.client.calls, [("change_specialist", 21, 0, 1)])
+
+    def test_retraining_a_specialist_we_do_not_have_is_refused(self):
+        results = self.run_orders(
+            [{"city": 21, "specialist": {"from": "Scientist", "to": "Elvis"}}])
+        self.assertTrue(results[0].startswith("FAILED"))
+
+    def test_building_something_the_city_is_too_small_for_is_noted(self):
+        self.game.cities[21]["size"] = 2
+        results = self.run_orders([{"city": 21, "build": ["unit", "Settlers"]}])
+        self.assertIn("NOTE", results[0])
+        self.assertIn("cannot finish until size 3", results[0])
+        # ...but it is still sent: you queue it while the city grows.
+        self.assertEqual(self.client.calls,
+                         [("change_production", 21, state.VUT_UTYPE, 5)])
+
+
+class ResearchValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.game = build_game()
+        self.client = FakeClient(self.game)
+
+    def run_orders(self, o):
+        return orders.apply_orders(self.client, o)
+
+    def test_researching_something_we_know_is_refused(self):
+        """The server drops this silently, and a turn of research goes."""
+        known = self.game.ruleset.techs[3]
+        self.game.research[0]["inventions"] = "2222"
+        results = self.run_orders([{"research": known["name"]}])
+        self.assertTrue(results[0].startswith("FAILED"))
+        self.assertIn("already know", results[0])
+        self.assertEqual(self.client.calls, [])
+
+    def test_researching_past_our_prerequisites_is_refused(self):
+        self.game.research[0]["inventions"] = "2000"
+        results = self.run_orders([{"research": "Pottery"}])
+        self.assertIn("research_goal", results[0])
+        self.assertEqual(self.client.calls, [])
+
+    def test_a_goal_may_be_out_of_reach_for_now(self):
+        self.game.research[0]["inventions"] = "2000"
+        results = self.run_orders([{"research_goal": "Pottery"}])
+        self.assertFalse(results[0].startswith("FAILED"))
+        self.assertEqual(self.client.calls, [("set_research_goal", 4)])
+
+
+class MapWindowTest(unittest.TestCase):
+    def setUp(self):
+        self.game = build_game()
+
+    def test_a_far_off_explorer_does_not_stretch_the_overview(self):
+        """One wanderer used to turn the empire view into 43x43 of '?'."""
+        before = observe.observation(self.game)["map"]["overview"]
+        self.game.units[13] = dict(self.game.units[11], id=13, tile=143)
+        after = observe.observation(self.game)["map"]
+        self.assertEqual(len(after["overview"]), len(before))
+        self.assertTrue(after["around_units_further_afield"])
+
+    def test_the_wanderer_gets_its_own_close_up(self):
+        self.game.units[13] = dict(self.game.units[11], id=13, tile=143)
+        views = observe.observation(self.game)["map"]["around_units_further_afield"]
+        label = list(views)[0]
+        self.assertIn("Settlers #13", label)
+
+    def test_all_unknown_edges_are_trimmed_away(self):
+        for index, tile in self.game.tiles.items():
+            if index != 40:
+                tile["known"] = state.TILE_UNKNOWN
+        overview = observe.observation(self.game)["map"]["overview"]
+        # A header and one row holding the single known tile.
+        self.assertEqual(len(overview), 2)
+        self.assertEqual(overview[1].split()[1], "gC")
+
+
 class InteractiveFileTest(unittest.TestCase):
     def setUp(self):
         self.game = build_game()
@@ -513,6 +708,14 @@ class InteractiveFileTest(unittest.TestCase):
     def test_no_orders_ends_the_phase_rather_than_hanging(self):
         results = self.agent.play_turn(deadline=0)
         self.assertEqual(results, [])
+
+    def test_the_seat_can_be_retuned_while_the_game_runs(self):
+        """Restarting the host would drop us out of the game, so observe.py
+        and orders.py are re-imported each turn instead."""
+        self.assertTrue(self.agent.reload_each_turn)
+        self.agent.reload_modules()
+        _path, obs = self.agent.write_observation(9)
+        self.assertEqual(obs["meta"]["turn"], 7)
 
     def test_messages_are_not_replayed_next_turn(self):
         self.agent.write_observation(7)

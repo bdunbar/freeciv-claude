@@ -241,6 +241,7 @@ class GameState(object):
         self.year = 0
         self.phase = None
         self.game_started = False
+        self.game_info = {}      # the last GAME_INFO: food/shield box, rules
         self.messages = []       # every Message, chat and notification alike
 
     # -- convenience ---------------------------------------------------
@@ -283,6 +284,71 @@ class GameState(object):
             if c["owner"] != self.player_no:
                 out[cid] = c
         return out
+
+    # -- the two boxes a city fills ------------------------------------
+
+    def granary_size(self, city_size):
+        """Food needed to grow one more citizen (common/city.c
+        city_granary_size). Sizes below `granary_num_inis` are listed
+        outright; past that each citizen adds a fixed amount."""
+        info = self.game_info
+        inis = info.get("granary_food_ini") or []
+        num_inis = info.get("granary_num_inis", len(inis))
+        if city_size <= 0 or not inis or num_inis <= 0:
+            return None
+        if city_size > num_inis:
+            base = inis[num_inis - 1]
+            base += info.get("granary_food_inc", 0) * (city_size - num_inis)
+        else:
+            base = inis[city_size - 1]
+        return max(base * info.get("foodbox", 100) // 100, 1)
+
+    def build_shield_cost(self, kind, value):
+        """Shields to finish something, with the game's shieldbox applied.
+
+        Ruleset costs are the unscaled ones; `shieldbox` is a game setting
+        that scales every build (common/improvement.c, common/unittype.c).
+        Per-city effects can still shift it, so this is the base figure.
+        """
+        if kind == VUT_UTYPE:
+            base = self.ruleset.units.get(value, {}).get("build_cost")
+        elif kind == VUT_IMPROVEMENT:
+            base = self.ruleset.buildings.get(value, {}).get("build_cost")
+        else:
+            base = None
+        if base is None:
+            return None
+        return max(base * self.game_info.get("shieldbox", 100) // 100, 1)
+
+    def pop_cost(self, unit_type_id):
+        """Citizens a unit costs the city that builds it -- 2 for Settlers
+        in the classic ruleset, which is why a size-2 city cannot build one."""
+        return self.ruleset.units.get(unit_type_id, {}).get("pop_cost", 0)
+
+    def worked_tiles(self, city_id):
+        """Tile indices this city has citizens working, from TILE_INFO."""
+        return sorted(i for i, t in self.tiles.items()
+                      if t.get("worked") == city_id)
+
+    def tile_output(self, index):
+        """Base food/shield/trade of a tile: terrain plus any resource.
+
+        This is the ruleset's flat figure. What a city actually collects
+        also depends on extras, government penalties and effects, so treat
+        it as the ordering, not the number.
+        """
+        tile = self.tiles.get(index)
+        if tile is None or tile.get("known") == TILE_UNKNOWN:
+            return None
+        terrain = self.ruleset.terrains.get(tile.get("terrain"))
+        if terrain is None:
+            return None
+        out = list((terrain.get("output") or [0, 0, 0])[:3])
+        resource = self.ruleset.resources.get(tile.get("resource"))
+        if resource:
+            for i, extra in enumerate((resource.get("output") or [])[:3]):
+                out[i] += extra
+        return {"food": out[0], "shield": out[1], "trade": out[2]}
 
     @property
     def move_fragments(self):
@@ -454,6 +520,7 @@ def _h_begin_turn(s, v):
 
 
 def _h_game_info(s, v):
+    s.game_info = v
     s.turn = v.get("turn", s.turn)
     s.year = v.get("year", s.year)
     s.game_started = v.get("is_new_game") is False or s.game_started

@@ -16,19 +16,19 @@ client just shows us as still thinking. Run the host under tmux or nohup so
 the game outlives the session that started it.
 """
 
+import importlib
 import json
 import os
 import time
 
-from . import observe
-from .orders import apply_orders
+from . import observe, orders
 
 POLL_SECONDS = 2.0
 
 
 class InteractiveAgent(object):
     def __init__(self, client, turns_dir, log=None, on_turn=None,
-                 poll_seconds=POLL_SECONDS):
+                 poll_seconds=POLL_SECONDS, reload_each_turn=True):
         self.client = client
         self.game = client.game
         self.dir = turns_dir
@@ -36,6 +36,9 @@ class InteractiveAgent(object):
         #: called with (turn, obs_path) once an observation is waiting
         self.on_turn = on_turn
         self.poll_seconds = poll_seconds
+        #: re-import observe.py and orders.py each turn, so the seat can be
+        #: tuned while the game is running
+        self.reload_each_turn = reload_each_turn
         self.last_message_mark = 0
         os.makedirs(self.dir, exist_ok=True)
 
@@ -78,7 +81,24 @@ class InteractiveAgent(object):
                 self.log("turn moved on to %d while waiting" % self.game.turn)
                 return None
 
+    def reload_modules(self):
+        """Pick up edits to observe.py and orders.py without restarting.
+
+        Restarting the host drops the seat out of the game, so without this
+        the two files you most want to fix are the two you cannot touch --
+        and mid-game is exactly when you find out what is wrong with them.
+        A file that will not import is reported and the old one kept.
+        """
+        for module in (observe, orders):
+            try:
+                importlib.reload(module)
+            except Exception as exc:
+                self.log("could not reload %s, keeping the loaded one: %s"
+                         % (module.__name__, exc))
+
     def play_turn(self, deadline=None):
+        if self.reload_each_turn:
+            self.reload_modules()
         turn = self.game.turn
         path, _obs = self.write_observation(turn)
         self.log("turn %d: waiting for orders -- observation in %s" %
@@ -86,23 +106,34 @@ class InteractiveAgent(object):
         if self.on_turn:
             self.on_turn(turn, path)
 
-        orders = self.wait_for_orders(turn, deadline)
-        if orders is None:
+        order_list = self.wait_for_orders(turn, deadline)
+        if order_list is None:
             self.log("turn %d: no orders; ending the phase unchanged" % turn)
             return []
 
-        results = apply_orders(self.client, orders)
+        results = orders.apply_orders(self.client, order_list)
         for line in results:
             self.log("  %s" % line)
         _write_json(self.path(turn, "result"), {
             "turn": turn,
             "note": ("'sent' means the packet went out; the server's verdict "
                      "is in the next turn's observation."),
-            "orders": orders,
+            "orders": order_list,
             "results": results})
         self.client.pump(0.5)
         return results
 
+
+HOW_CITIES_WORK = (
+    "Cities: 'food.box' is what growth costs and 'food.turns_to_grow' when "
+    "it arrives; 'worked_tiles' and 'free_tiles' are the levers when food or "
+    "shields are the binding constraint -- free a tile with 'stop_working' "
+    "and claim one with 'work_tile', both by [x, y]. 'population_cost' on a "
+    "unit is citizens it consumes, so a size-2 city can never finish "
+    "Settlers. Read 'warnings' on each city first: they are the things that "
+    "quietly cost turns. Tile output is the ruleset's flat terrain figure -- "
+    "the right ordering, not the exact number."
+)
 
 HOW_DIPLOMACY_WORKS = (
     "Diplomacy: talk to a player only while 'can_negotiate_now' is true in "
@@ -131,6 +162,9 @@ HOW_TO_ANSWER = (
     '{"city": 131, "build": ["unit", "Phalanx"]}, '
     '{"city": 131, "worklist": [["improvement", "Temple"]]}, '
     '{"city": 131, "buy": true}, '
+    '{"city": 131, "work_tile": [15, 21]}, '
+    '{"city": 131, "stop_working": [16, 21]}, '
+    '{"city": 131, "specialist": {"from": "elvis", "to": "scientist"}}, '
     '{"research_goal": "Currency"}, '
     '{"rates": {"tax": 30, "luxury": 0, "science": 70}}, '
     '{"government": "Monarchy"}, '
@@ -139,7 +173,7 @@ HOW_TO_ANSWER = (
     '{"diplomacy": "accept", "with": "Pakal"}. '
     "A tile is either an index or an [x, y] map coordinate. Orders are "
     "applied in order and each one's outcome is reported back."
-    " " + HOW_DIPLOMACY_WORKS
+    " " + HOW_CITIES_WORK + " " + HOW_DIPLOMACY_WORKS
 )
 
 

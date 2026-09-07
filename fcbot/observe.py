@@ -9,10 +9,15 @@ you can actually look at instead of a list of tile dictionaries.
 
 from . import state
 
-#: Cap on the empire overview's radius, in tiles.
-MAX_OVERVIEW_RADIUS = 22
+#: Bounds on the empire overview's radius, in tiles.
+MAX_OVERVIEW_RADIUS = 16
+MIN_OVERVIEW_RADIUS = 5
+#: Room to leave around the outermost city, so its surroundings are visible.
+OVERVIEW_MARGIN = 5
 #: How much of the map around a city its local view covers.
 CITY_VIEW_RADIUS = 3
+#: And around a unit the overview does not reach.
+AWAY_UNIT_VIEW_RADIUS = 4
 
 
 # -- naming -------------------------------------------------------------
@@ -47,14 +52,6 @@ def production_name(game, kind, value):
     if kind == state.VUT_IMPROVEMENT:
         return "improvement:" + _name(game.ruleset.buildings, value)
     return "kind%d:%d" % (kind, value)
-
-
-def production_cost(game, kind, value):
-    if kind == state.VUT_UTYPE:
-        return game.ruleset.units.get(value, {}).get("build_cost")
-    if kind == state.VUT_IMPROVEMENT:
-        return game.ruleset.buildings.get(value, {}).get("build_cost")
-    return None
 
 
 # -- map ----------------------------------------------------------------
@@ -106,7 +103,10 @@ class MapView(object):
             return char + "~"
         return char + " "
 
-    def render(self):
+    def render(self, trim=True):
+        """The window as text rows. Rows and columns at the edge that hold
+        nothing but unexplored tiles are dropped: a lone explorer used to
+        stretch the overview to 43x43 of mostly `?`."""
         game = self.game
         topo = game.topo
         self._rivers = 0
@@ -114,22 +114,27 @@ class MapView(object):
             self._rivers |= 1 << eid
         cx, cy = topo.index_to_map(self.center)
         r = self.radius
-        lines = [self._header(cx, r)]
-        for dy in range(-r, r + 1):
-            row = "".join(self.cell(topo.map_to_index(cx + dx, cy + dy))
-                          for dx in range(-r, r + 1))
-            lines.append("%5d %s" % (cy + dy, row))
+        xs = list(range(cx - r, cx + r + 1))
+        ys = list(range(cy - r, cy + r + 1))
+        grid = [[self.cell(topo.map_to_index(x, y)) for x in xs] for y in ys]
+        if trim:
+            xs, ys, grid = _trim_blank_edges(xs, ys, grid)
+        if not grid:
+            return [self._header([cx]), "%5d %s" % (cy, "? ")]
+        lines = [self._header(xs)]
+        for y, row in zip(ys, grid):
+            lines.append("%5d %s" % (y, "".join(row)))
         return lines
 
     @staticmethod
-    def _header(cx, r):
-        """An x-axis ruler. Cells are two chars, so a label every five of
-        them has ten columns to sit in and never gets clipped."""
-        header = [" "] * (6 + 2 * (2 * r + 1))
-        for i, dx in enumerate(range(-r, r + 1)):
-            if dx % 5:
+    def _header(xs):
+        """An x-axis ruler. Cells are two chars, so a label every five
+        columns has ten columns to sit in and never gets clipped."""
+        header = [" "] * (6 + 2 * len(xs))
+        for i, x in enumerate(xs):
+            if x % 5:
                 continue
-            label = str(cx + dx)
+            label = str(x)
             at = 6 + 2 * i
             header[at:at + len(label)] = label
         return "".join(header).rstrip()
@@ -150,13 +155,49 @@ class MapView(object):
         }
 
 
+#: A cell that carries no information: unexplored, or off the map.
+BLANK_CELLS = ("? ", "  ")
+
+
+def _trim_blank_edges(xs, ys, grid):
+    """Drop leading and trailing rows and columns that are entirely blank."""
+    def row_blank(row):
+        return all(cell in BLANK_CELLS for cell in row)
+
+    top, bottom = 0, len(grid)
+    while top < bottom and row_blank(grid[top]):
+        top += 1
+    while bottom > top and row_blank(grid[bottom - 1]):
+        bottom -= 1
+    grid, ys = grid[top:bottom], ys[top:bottom]
+    if not grid:
+        return [], [], []
+
+    left, right = 0, len(grid[0])
+    while left < right and all(row[left] in BLANK_CELLS for row in grid):
+        left += 1
+    while right > left and all(row[right - 1] in BLANK_CELLS for row in grid):
+        right -= 1
+    return xs[left:right], ys, [row[left:right] for row in grid]
+
+
 def _overview_radius(game, center):
-    known = [i for i, t in game.tiles.items()
-             if t["known"] != state.TILE_UNKNOWN]
-    if not known:
+    """How far the empire overview reaches.
+
+    Keyed on where we have *settled*, not on the frontier: one explorer
+    twenty tiles out should not stretch the picture of home to fit it. Units
+    that fall outside get their own close-up instead.
+    """
+    topo = game.topo
+    anchors = [c["tile"] for c in game.my_cities().values()]
+    if not anchors:
+        # Before the first city, the units are the empire.
+        anchors = [u["tile"] for u in game.my_units().values()]
+    if not anchors:
         return 5
-    reach = max(game.topo.real_distance(center, i) for i in known)
-    return max(4, min(MAX_OVERVIEW_RADIUS, reach))
+    reach = max(topo.real_distance(center, i) for i in anchors)
+    return max(MIN_OVERVIEW_RADIUS,
+               min(MAX_OVERVIEW_RADIUS, reach + OVERVIEW_MARGIN))
 
 
 def _my_centre(game):
@@ -167,6 +208,18 @@ def _my_centre(game):
     if units:
         return sorted(units.values(), key=lambda u: u["id"])[0]["tile"]
     return 0
+
+
+def _units_off_the_overview(game, centre, radius):
+    """Our units the overview does not reach -- explorers, mostly."""
+    topo = game.topo
+    cx, cy = topo.index_to_map(centre)
+    out = []
+    for u in sorted(game.my_units().values(), key=lambda u: u["id"]):
+        x, y = topo.index_to_map(u["tile"])
+        if abs(x - cx) > radius or abs(y - cy) > radius:
+            out.append(u)
+    return out
 
 
 # -- the observation ----------------------------------------------------
@@ -276,7 +329,7 @@ def _city(game, c):
     surplus = c.get("surplus") or [0] * 6
     kind, value = c.get("production_kind"), c.get("production_value")
     building = production_name(game, kind, value)
-    cost = production_cost(game, kind, value)
+    cost = game.build_shield_cost(kind, value)
     shields = c.get("shield_stock", 0)
     per_turn = surplus[1]
     if cost is None:
@@ -293,13 +346,16 @@ def _city(game, c):
                           for b in game.ruleset.buildings if built >> b & 1)
     garrison = [u["id"] for u in game.my_units().values()
                 if u["tile"] == c["tile"]]
-    return {
+    worked, free = _city_tiles(game, c)
+    out = {
         "id": c["id"],
         "name": c.get("name"),
         "tile": c["tile"],
         "at": [x, y],
         "size": c.get("size"),
-        "food": {"surplus": surplus[0], "stock": c.get("food_stock")},
+        "food": {"surplus": surplus[0], "stock": c.get("food_stock"),
+                 "box": game.granary_size(c.get("size", 0)),
+                 "turns_to_grow": _turns_to_grow(game, c, surplus[0])},
         "shields": {"surplus": per_turn, "stock": shields},
         "trade": surplus[2],
         "building": building,
@@ -312,7 +368,110 @@ def _city(game, c):
         "garrison": garrison,
         "in_disorder": bool(c.get("anarchy", 0)),
         "celebrating": bool(c.get("rapture", 0)),
+        "specialists": _specialists(game, c),
+        "worked_tiles": worked,
+        "free_tiles": free,
     }
+    if kind == state.VUT_UTYPE:
+        out["population_cost"] = game.pop_cost(value)
+    out["warnings"] = _city_warnings(game, c, out, kind, value, cost, shields)
+    return out
+
+
+def _turns_to_grow(game, c, food_surplus):
+    box = game.granary_size(c.get("size", 0))
+    stock = c.get("food_stock", 0)
+    if box is None:
+        return None
+    if food_surplus > 0:
+        return max(1, -(-(box - stock) // food_surplus))
+    if food_surplus < 0:
+        return "shrinking, %d turns of food left" % (
+            max(0, stock) // -food_surplus)
+    return "never at this rate"
+
+
+def _specialists(game, c):
+    """How many citizens are entertainers, scientists, taxmen.
+
+    Named by their plural, which is the readable name; `rule_name` is the
+    lowercase id ("elvis") that orders match against, case-insensitively.
+    """
+    counts = c.get("specialists") or []
+    out = {}
+    for sid, n in enumerate(counts):
+        if not n:
+            continue
+        spec = game.ruleset.specialists.get(sid) or {}
+        name = (spec.get("plural_name") or spec.get("rule_name")
+                or "specialist %d" % sid)
+        out[name] = n
+    return out
+
+
+def _city_tiles(game, c):
+    """The tiles this city works, and the ones inside its radius going
+    spare. Output is the ruleset's flat terrain+resource figure, which is
+    the right *ordering* even where effects shift the actual number."""
+    topo = game.topo
+    radius_sq = c.get("city_radius_sq", 5)
+    reach = int(radius_sq ** 0.5) + 1
+    cx, cy = topo.index_to_map(c["tile"])
+    worked, free = [], []
+    for dy in range(-reach, reach + 1):
+        for dx in range(-reach, reach + 1):
+            index = topo.map_to_index(cx + dx, cy + dy)
+            if index is None or index == c["tile"]:
+                continue
+            if topo.sq_distance(c["tile"], index) > radius_sq:
+                continue
+            output = game.tile_output(index)
+            if output is None:
+                continue
+            tile = game.tiles.get(index, {})
+            entry = {
+                "at": [cx + dx, cy + dy],
+                "terrain": _name(game.ruleset.terrains, tile.get("terrain")),
+                "output": output,
+            }
+            resource = tile.get("resource", state.NO_RESOURCE)
+            if resource != state.NO_RESOURCE:
+                entry["resource"] = _name(game.ruleset.extras, resource)
+            by = tile.get("worked", 0)
+            if by == c["id"]:
+                worked.append(entry)
+            elif by:
+                continue            # another city has it
+            else:
+                free.append(entry)
+    free.sort(key=lambda t: (-t["output"]["food"], -t["output"]["shield"],
+                             -t["output"]["trade"]))
+    return worked, free
+
+
+def _city_warnings(game, c, out, kind, value, cost, shields):
+    """The things that quietly cost turns if nobody notices them."""
+    warnings = []
+    size = c.get("size", 0)
+    if kind == state.VUT_UTYPE:
+        pop_cost = game.pop_cost(value)
+        if pop_cost and size <= pop_cost:
+            warnings.append(
+                "%s costs %d population and this city is size %d -- it "
+                "cannot be completed until size %d"
+                % (_name(game.ruleset.units, value), pop_cost, size,
+                   pop_cost + 1))
+    if cost is not None and shields > cost:
+        warnings.append(
+            "%d shields banked against a cost of %d -- the surplus above "
+            "the cost is wasted if the build stays blocked"
+            % (shields, cost))
+    if out["food"]["surplus"] < 0:
+        warnings.append("food surplus is %d: this city is starving"
+                        % out["food"]["surplus"])
+    if out["in_disorder"]:
+        warnings.append("in disorder -- it produces nothing until that is fixed")
+    return warnings
 
 
 def _foreign(game):
@@ -449,7 +608,8 @@ def _messages(game, since):
 def observation(game, since_message=0):
     """The whole situation, as a JSON-serialisable dict."""
     centre = _my_centre(game)
-    view = MapView(game, centre, _overview_radius(game, centre))
+    radius = _overview_radius(game, centre)
+    view = MapView(game, centre, radius)
     chat, events, diplomatic = _messages(game, since_message)
 
     cities = [_city(game, c) for c in
@@ -458,6 +618,15 @@ def observation(game, since_message=0):
     for c in sorted(game.my_cities().values(), key=lambda c: c["id"]):
         local = MapView(game, c["tile"], CITY_VIEW_RADIUS)
         city_views[c["name"]] = local.render()
+
+    # Units the overview cannot reach get their own close-up rather than
+    # stretching the whole picture out to include them.
+    away_views = {}
+    for u in _units_off_the_overview(game, centre, radius):
+        label = "%s #%d at %s" % (_name(game.ruleset.units, u["type"]),
+                                  u["id"], list(game.topo.index_to_map(u["tile"])))
+        away_views[label] = MapView(game, u["tile"],
+                                    AWAY_UNIT_VIEW_RADIUS).render()
 
     return {
         "meta": _meta(game),
@@ -470,6 +639,7 @@ def observation(game, since_message=0):
             "centre_tile": centre,
             "overview": view.render(),
             "around_each_city": city_views,
+            "around_units_further_afield": away_views,
         },
         "foreign": _foreign(game),
         "diplomacy": _diplomacy(game),
@@ -479,6 +649,14 @@ def observation(game, since_message=0):
         "events_since_last_turn": events,
         "message_mark": len(game.messages),
     }
+
+
+def _tile_label(t):
+    o = t["output"]
+    return "%s %s (%d/%d/%d%s)" % (t["at"], t["terrain"], o["food"],
+                                   o["shield"], o["trade"],
+                                   " " + t["resource"] if t.get("resource")
+                                   else "")
 
 
 def year_label(year):
@@ -506,16 +684,33 @@ def to_text(obs):
     out.append("")
     out.append("CITIES (%d)" % len(obs["cities"]))
     for c in obs["cities"]:
-        out.append("  %-16s #%-4s size %-3s at %s  food %+d (%s)  shields %+d"
+        food = c["food"]
+        out.append("  %-16s #%-4s size %-3s at %s" %
+                   (c["name"], c["id"], c["size"], c["at"]))
+        out.append("      food %+d (%s/%s box, grows in %s)  shields %+d"
                    "  trade %d" %
-                   (c["name"], c["id"], c["size"], c["at"],
-                    c["food"]["surplus"], c["food"]["stock"],
-                    c["shields"]["surplus"], c["trade"]))
-        out.append("      building %s, %s turns left%s" %
-                   (c["building"], c["turns_to_completion"],
+                   (food["surplus"], food["stock"], food["box"],
+                    food["turns_to_grow"], c["shields"]["surplus"],
+                    c["trade"]))
+        pop = c.get("population_cost")
+        out.append("      building %s (%s/%s shields, %s turns left)%s%s" %
+                   (c["building"], c["shields"]["stock"], c["build_cost"],
+                    c["turns_to_completion"],
+                    ", costs %d pop" % pop if pop else "",
                     "  IN DISORDER" if c["in_disorder"] else ""))
         if c["worklist"]:
             out.append("      then: %s" % ", ".join(c["worklist"]))
+        if c.get("specialists"):
+            out.append("      specialists: %s" %
+                       ", ".join("%d %s" % (n, name) for name, n
+                                 in sorted(c["specialists"].items())))
+        for warning in c.get("warnings") or []:
+            out.append("      ! %s" % warning)
+        free = c.get("free_tiles") or []
+        if free and c.get("worked_tiles") is not None:
+            out.append("      working %d tiles; best unworked nearby: %s" %
+                       (len(c["worked_tiles"]),
+                        ", ".join(_tile_label(t) for t in free[:4])))
 
     out.append("")
     out.append("UNITS (%d)" % len(obs["units"]))
@@ -530,9 +725,15 @@ def to_text(obs):
                     u["activity"], (" [" + ", ".join(extra) + "]") if extra else ""))
 
     out.append("")
-    out.append("MAP")
+    out.append("MAP -- around our cities")
     for line in obs["map"]["overview"]:
         out.append("  " + line)
+    for label, lines in (obs["map"].get("around_units_further_afield")
+                         or {}).items():
+        out.append("")
+        out.append("  further afield: %s" % label)
+        for line in lines:
+            out.append("  " + line)
     legend = obs["map"]["legend"]
     out.append("  " + legend["cells"])
     out.append("  terrain: " + legend["terrain"])

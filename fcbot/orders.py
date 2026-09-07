@@ -77,6 +77,32 @@ def _production(game, spec):
                      "got %r" % (kind,))
 
 
+#: RESEARCH_INFO's `inventions` string, one character per tech.
+UNKNOWN, RESEARCHABLE, KNOWN = "0", "1", "2"
+
+
+def _invention(game, tech_id):
+    research = game.my_research or {}
+    inventions = research.get("inventions") or ""
+    if 0 <= tech_id < len(inventions):
+        return inventions[tech_id]
+    return UNKNOWN
+
+
+def _check_researchable(game, tech_id, tech):
+    """What `handle_player_research` requires: not already known, and every
+    prerequisite in hand."""
+    status = _invention(game, tech_id)
+    if status == KNOWN:
+        raise OrderError("we already know %s -- researching it again would "
+                         "be dropped silently and cost a turn"
+                         % tech.get("name"))
+    if status != RESEARCHABLE:
+        raise OrderError("%s is not researchable yet: its prerequisites are "
+                         "not known. Set it as a research_goal instead and "
+                         "the server will path to it." % tech.get("name"))
+
+
 # -- individual orders --------------------------------------------------
 
 def _unit_order(client, order):
@@ -149,7 +175,17 @@ def _city_order(client, order):
     if "build" in order:
         kind, value = _production(game, order["build"])
         client.change_production(cid, kind, value)
-        done.append("build %s" % order["build"][1])
+        note = ""
+        if kind == state.VUT_UTYPE:
+            # Not an error -- you queue this while the city grows -- but it
+            # is the kind of thing that quietly costs a turn.
+            pop_cost = game.pop_cost(value)
+            size = city.get("size", 0)
+            if pop_cost and size <= pop_cost:
+                note = (" (NOTE: costs %d population, city is size %d, so it "
+                        "cannot finish until size %d)"
+                        % (pop_cost, size, pop_cost + 1))
+        done.append("build %s%s" % (order["build"][1], note))
 
     if "worklist" in order:
         entries = [_production(game, spec) for spec in order["worklist"]]
@@ -160,9 +196,62 @@ def _city_order(client, order):
         client.buy_production(cid)
         done.append("buy for %s gold" % city.get("buy_cost"))
 
+    for key in ("work_tile", "work_tiles"):
+        if key in order:
+            tiles = order[key]
+            if not isinstance(tiles, list) or (tiles and not
+                                               isinstance(tiles[0], (list, tuple))):
+                tiles = [tiles]
+            for spec in tiles:
+                index = _tile(game, spec)
+                _check_in_city_radius(game, city, index)
+                client.make_worker(cid, index)
+            done.append("work %d tile(s)" % len(tiles))
+
+    for key in ("stop_working", "unwork_tile"):
+        if key in order:
+            tiles = order[key]
+            if not isinstance(tiles, list) or (tiles and not
+                                               isinstance(tiles[0], (list, tuple))):
+                tiles = [tiles]
+            for spec in tiles:
+                index = _tile(game, spec)
+                _check_in_city_radius(game, city, index)
+                client.make_specialist(cid, index)
+            done.append("free %d tile(s) into specialists" % len(tiles))
+
+    if "specialist" in order:
+        spec = order["specialist"]
+        if not isinstance(spec, dict) or "from" not in spec or "to" not in spec:
+            raise OrderError('specialist needs {"from": ..., "to": ...}, '
+                             "got %r" % (spec,))
+        from_id, from_s = _lookup(game.ruleset.specialists, spec["from"],
+                                  "specialist")
+        to_id, to_s = _lookup(game.ruleset.specialists, spec["to"],
+                              "specialist")
+        if not (city.get("specialists") or [])[from_id:from_id + 1] or \
+                not city["specialists"][from_id]:
+            raise OrderError("city %d has no %s to reassign"
+                             % (cid, from_s.get("rule_name")))
+        client.change_specialist(cid, from_id, to_id)
+        done.append("a %s becomes a %s" % (from_s.get("rule_name"),
+                                           to_s.get("rule_name")))
+
     if not done:
-        raise OrderError("city %d: nothing to do (build, worklist, buy)" % cid)
+        raise OrderError("city %d: nothing to do (build, worklist, buy, "
+                         "work_tile, stop_working, specialist)" % cid)
     return "city %s: sent %s" % (city.get("name", cid), ", ".join(done))
+
+
+def _check_in_city_radius(game, city, index):
+    radius_sq = city.get("city_radius_sq", 5)
+    if game.topo.sq_distance(city["tile"], index) > radius_sq:
+        x, y = game.topo.index_to_map(index)
+        raise OrderError("tile [%d, %d] is outside %s's work radius"
+                         % (x, y, city.get("name")))
+    if index == city["tile"]:
+        raise OrderError("the city centre tile is worked for free and cannot "
+                         "be reassigned")
 
 
 # -- diplomacy ----------------------------------------------------------
@@ -451,11 +540,16 @@ def _player_order(client, order):
 
     if "research" in order:
         tid, tech = _lookup(game.ruleset.techs, order["research"], "tech")
+        # The server drops a request whose prerequisites are not met without
+        # saying so, and a turn of research goes with it.
+        _check_researchable(game, tid, tech)
         client.set_research(tid)
         return "sent research %s" % tech.get("name")
 
     if "research_goal" in order:
         tid, tech = _lookup(game.ruleset.techs, order["research_goal"], "tech")
+        if _invention(game, tid) == KNOWN:
+            raise OrderError("we already know %s" % tech.get("name"))
         client.set_research_goal(tid)
         return "sent research goal %s" % tech.get("name")
 

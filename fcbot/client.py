@@ -223,6 +223,25 @@ class Client(object):
                        worklist=list(entries))
         return True
 
+    def make_worker(self, city_id, tile_id):
+        """Put a citizen to work on a tile, taking them off whatever they
+        were doing. The server rearranges the rest if it has to."""
+        self.conn.send("PACKET_CITY_MAKE_WORKER",
+                       city_id=city_id, tile_id=tile_id)
+        return True
+
+    def make_specialist(self, city_id, tile_id):
+        """Take the citizen off a worked tile; they become the default
+        specialist (an entertainer, in the classic ruleset)."""
+        self.conn.send("PACKET_CITY_MAKE_SPECIALIST",
+                       city_id=city_id, tile_id=tile_id)
+        return True
+
+    def change_specialist(self, city_id, from_id, to_id):
+        self.conn.send("PACKET_CITY_CHANGE_SPECIALIST",
+                       city_id=city_id, **{"from": from_id, "to": to_id})
+        return True
+
     def buy_production(self, city_id):
         self.conn.send("PACKET_CITY_BUY", city_id=city_id)
         return True
