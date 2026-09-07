@@ -70,6 +70,25 @@ lines of if-statements -- it does not wage war, has no diplomacy, and is a
 weak opponent. It logs in as `fcbot` rather than `claude` precisely so a
 game against the script is never mistaken for a game against the model.
 
+### Playing a turn
+
+The observation/orders files are a good way for two processes to hand a game
+back and forth, but a poor thing to drive by hand: every turn costs a check
+for the observation, a write of the orders, and a wait for the reply, with
+the turn number tracked in between. `play` is all three in one call:
+
+    ./fcgame.py play --orders '[{"unit": 112, "activity": "fortify"}]'
+
+It finds the turn that is waiting, submits the orders, prints what the
+server made of each one, and then blocks until the next observation and
+prints that. `--orders -` reads them from stdin instead; omitting `--orders`
+sends none, which ends the phase unchanged and is a legitimate turn.
+
+Because it blocks until the next observation, running it in the background
+turns "is it my turn?" from a question you have to keep asking into one you
+get told the answer to — the call returns exactly when there is something to
+decide.
+
 ### Orders
 
 A JSON list, applied in order. Tiles are an index or an `[x, y]` map
@@ -177,7 +196,7 @@ as on you: it only ever learns what a human in its seat would see.
 
 | file | role |
 |---|---|
-| `fcgame.py` | CLI: host a game and play against Claude |
+| `fcgame.py` | CLI: `host` a game, `play` a turn, `status` to look |
 | `fcbot/protocol/pdef.py` | parser for freeciv's `packets.def` |
 | `fcbot/protocol/dataio.py` | wire encodings (mirrors `common/dataio.c`) |
 | `fcbot/protocol/codec.py` | packet encode/decode incl. delta compression |

@@ -157,6 +157,19 @@ the server reject every orders packet aimed along them. `has_iso_flag` is
 now separate from `is_isometric`, and single steps in every legal direction
 were checked live on all three shapes.
 
+## Driving the seat (2026-09-07)
+
+Playing by hand cost three shell calls a turn -- poll for the observation,
+write the orders, poll for the reply -- plus tracking the turn number.
+`./fcgame.py play` does all of it in one call and prints the order results
+and the next observation together. Run it in the background and its return
+*is* the "your move" signal, which is the part that was actually missing:
+nothing ever told the player their turn had come.
+
+Not changed, deliberately: the two-file protocol itself. It is simple,
+debuggable, survives a restart, and works. The gap was a client for it, not
+a different design.
+
 ## Where things stand (2026-09-07)
 
 Everything the first game turned up is fixed and, where it touches the wire,

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Host a game of freeciv that you play against Claude.
 
-    ./fcgame.py host --ai 3 --skill hard
+    ./fcgame.py host --ai 3 --skill hard      # start a game
+    echo '[...]' | ./fcgame.py play           # play one turn
+    ./fcgame.py status                        # look without touching
 
 Starts a freeciv server, connects a second client to it, then waits for you
 to join with your own freeciv client and pick a nation. Once you click
@@ -197,6 +199,103 @@ def play_loop(client, agent, srv, args):
     return 0
 
 
+def _turn_files(turns_dir):
+    """{turn number: True} for every observation written so far."""
+    turns = {}
+    for name in os.listdir(turns_dir):
+        match = re.match(r"(\d{4})\.obs\.json$", name)
+        if match:
+            turns[int(match.group(1))] = True
+    return turns
+
+
+def _pending_turn(turns_dir):
+    """The turn waiting on us: the newest observation with no orders yet."""
+    if not os.path.isdir(turns_dir):
+        return None
+    turns = _turn_files(turns_dir)
+    if not turns:
+        return None
+    latest = max(turns)
+    if os.path.exists(os.path.join(turns_dir, "%04d.orders.json" % latest)):
+        return None                 # already answered; the host is thinking
+    return latest
+
+
+def _await(predicate, timeout, poll=0.5):
+    """Wait for `predicate()` to return something truthy, or None on timeout."""
+    deadline = time.time() + timeout
+    while True:
+        value = predicate()
+        if value:
+            return value
+        if time.time() >= deadline:
+            return None
+        time.sleep(poll)
+
+
+def cmd_play(args):
+    """Submit one turn's orders and print the next observation.
+
+    The file protocol is a good way for two processes to hand a game back and
+    forth, but it is a poor thing to drive by hand: every turn costs a
+    check for the observation, a write of the orders, and a wait for the
+    reply, with the turn number tracked in between. This is all three in one
+    call -- and because it blocks until the next observation, running it in
+    the background turns "is it my turn?" from a question you have to keep
+    asking into one you get told the answer to.
+    """
+    turns_dir = args.turns_dir
+    # Reading stdin unasked would hang whenever stdin is an open pipe rather
+    # than a terminal -- which is the normal case for a scripted caller. So
+    # stdin is opt-in, the conventional way: `--orders -`.
+    if args.orders == "-":
+        orders_text = sys.stdin.read().strip()
+    else:
+        orders_text = (args.orders or "").strip()
+    try:
+        orders = json.loads(orders_text) if orders_text else []
+    except ValueError as exc:
+        log("orders are not valid JSON: %s" % exc)
+        return 2
+    if not isinstance(orders, list):
+        log("orders must be a JSON list, got %s" % type(orders).__name__)
+        return 2
+
+    turn = _await(lambda: _pending_turn(turns_dir), args.timeout)
+    if turn is None:
+        log("no turn is waiting for orders in %s after %ds -- is the host "
+            "running, and has the game started?" % (turns_dir, args.timeout))
+        return 1
+
+    path = os.path.join(turns_dir, "%04d.orders.json" % turn)
+    tmp = path + ".partial"
+    with open(tmp, "w") as fp:
+        json.dump(orders, fp, indent=2)
+        fp.write("\n")
+    os.replace(tmp, path)
+    log("turn %d: submitted %d order(s)" % (turn, len(orders)))
+
+    # What the server made of them, then what it looks like now.
+    result_path = os.path.join(turns_dir, "%04d.result.json" % turn)
+    if _await(lambda: os.path.exists(result_path),
+              min(30, args.timeout), poll=0.25) and orders:
+        with open(result_path) as fp:
+            for line in json.load(fp).get("results", []):
+                print("  %s" % line)
+        print()
+
+    next_obs = os.path.join(turns_dir, "%04d.obs.json" % (turn + 1))
+    if _await(lambda: os.path.exists(next_obs), args.timeout) is None:
+        log("turn %d applied, but no observation for turn %d after %ds. The "
+            "game may have ended, or the host may have stopped -- check the "
+            "host log." % (turn, turn + 1, args.timeout))
+        return 1
+    with open(next_obs) as fp:
+        print(observe.to_text(json.load(fp)))
+    return 0
+
+
 def cmd_status(args):
     """Show what the bot is looking at, without touching the game."""
     if not os.path.isdir(args.turns_dir):
@@ -295,6 +394,18 @@ def main(argv=None):
     host.add_argument("--stall-timeout", type=int, default=600)
     host.add_argument("--save-on-exit", default=None)
     host.set_defaults(func=cmd_host)
+
+    play = sub.add_parser(
+        "play", help="submit one turn's orders and print the next observation")
+    play.add_argument("--turns-dir", default=os.path.join("games", "turns"))
+    play.add_argument("--orders", default=None,
+                      help="the orders as a JSON list, or '-' to read them "
+                           "from stdin. Omitted means no orders, which ends "
+                           "the phase unchanged -- a legitimate turn.")
+    play.add_argument("--timeout", type=int, default=600,
+                      help="seconds to wait for a turn to be ready, and "
+                           "again for the next observation")
+    play.set_defaults(func=cmd_play)
 
     status = sub.add_parser(
         "status", help="print the latest observation as readable text")
