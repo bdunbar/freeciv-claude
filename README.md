@@ -68,9 +68,45 @@ coordinate; units, cities and techs are named, not numbered:
   {"research_goal": "Currency"},
   {"rates": {"tax": 30, "luxury": 0, "science": 70}},
   {"government": "Monarchy"},
-  {"chat": "Nice city. It would be a shame if something happened to it."}
+  {"chat": "Nice city. It would be a shame if something happened to it."},
+  {"diplomacy": "offer", "with": "Pakal", "clauses": ["ceasefire"]},
+  {"diplomacy": "accept", "with": "Brennus"}
 ]
 ```
+
+### Diplomacy
+
+A treaty is a *meeting* with clauses on the table, and it happens only once
+both sides have accepted the table as it stands -- so any clause added later
+clears both acceptances. `offer` does the whole dance: opens a meeting if
+there is none, puts the clauses down, and accepts our side last.
+
+```json
+[
+  {"diplomacy": "offer", "with": "Pakal", "clauses": ["ceasefire"]},
+  {"diplomacy": "offer", "with": "Brennus", "clauses": [
+      "peace",
+      {"type": "advance", "value": "Alphabet"},
+      {"type": "gold", "value": 50, "from": "them"}
+  ]},
+  {"diplomacy": "accept", "with": "Brennus"},
+  {"diplomacy": "break", "with": "Pakal"}
+]
+```
+
+Clauses are `ceasefire` (only from war), `peace` (from war or ceasefire),
+`alliance`, `embassy`, `vision`, `shared_tiles`, `map`, `seamap`, and with a
+value `advance`, `gold` and `city`. `"from"` says who hands the thing over:
+`"me"` by default, `"them"` to ask for it instead. Other actions are `meet`,
+`withdraw`, `cancel_meeting`, `break` (one step down: alliance -> peace ->
+war) and `stop_vision`.
+
+Whether you can talk to someone at all is in the observation's diplomacy
+section as `can_negotiate_now`: an embassy makes it permanent, plain contact
+lapses a few turns after you last met. Open meetings, who put what on the
+table, and who is waiting on whom are under `meetings`; the other side's
+answers -- an AI's reason for refusing, a treaty signed or broken -- come
+back under `diplomatic_news`.
 
 A bad order does not cost you the turn: it is reported as `FAILED` in the
 result file and the rest still run. `sent` in that file means the packet
@@ -110,7 +146,7 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/state.py` | game state assembled from the packet stream |
 | `fcbot/fcmap.py` | topology: tile indices, native/map coords, directions |
 | `fcbot/fcpath.py` | pathfinding over tiles we actually know |
-| `fcbot/client.py` | player actions: orders, production, research, rates |
+| `fcbot/client.py` | player actions: orders, production, research, rates, treaties |
 | `fcbot/observe.py` | what we can see, shaped to be read (including the map) |
 | `fcbot/orders.py` | JSON orders resolved to real actions |
 | `fcbot/interactive.py` | the turn loop that waits for the model |

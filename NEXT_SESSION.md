@@ -23,18 +23,31 @@ hard AIs, driven entirely through the observation/orders files. It works --
 the seat founded a city, expanded, fought off nothing, and held a
 conversation. What it turned up, roughly in order of how much it cost me:
 
-### 1. There is no diplomacy at all
+### 1. There is no diplomacy at all  -- DONE (2026-09-07)
 
-The biggest gap. Both AIs I met declared war on sight and then repeatedly
-offered a ceasefire, and there is no way to accept. `orders.py` has no
-diplomacy verb because `client.py` implements no treaty packets:
-`PACKET_DIPLOMACY_INIT_MEETING_REQ`, `_CREATE_CLAUSE_REQ`,
-`_ACCEPT_TREATY_REQ`, `_CANCEL_MEETING_REQ`, plus handling the incoming
-`PACKET_DIPLOMACY_*` so a pending meeting shows up in the observation.
+Built: `client.py` speaks all five meeting packets plus `CANCEL_PACT`,
+`state.py` mirrors the treaty on the table (including the rule that any new
+clause clears both acceptances), `observe.py` reports open meetings, whether
+we can talk to a player at all, and the other side's answers, and `orders.py`
+has a `diplomacy` verb -- `meet`, `offer`, `accept`, `withdraw`,
+`cancel_meeting`, `break`, `stop_vision`. Verified live against a 3.2.5
+server: war -> ceasefire with a hard AI in one order, and a peace-plus-
+embassies offer left pending with the AI's refusal ("I wish to see you keep
+the current ceasefire for a bit longer first") coming back as diplomatic
+news. Also fixed here: `chat_since()` no longer echoes our own lines.
 
-Without it the seat cannot make peace, trade techs, form an alliance, or
-respond to Brian as anything but a chat partner -- in a five-player game
-that is most of the strategy space missing. Do this one first.
+What the note said at the time:
+
+> The biggest gap. Both AIs I met declared war on sight and then repeatedly
+> offered a ceasefire, and there is no way to accept. `orders.py` has no
+> diplomacy verb because `client.py` implements no treaty packets:
+> `PACKET_DIPLOMACY_INIT_MEETING_REQ`, `_CREATE_CLAUSE_REQ`,
+> `_ACCEPT_TREATY_REQ`, `_CANCEL_MEETING_REQ`, plus handling the incoming
+> `PACKET_DIPLOMACY_*` so a pending meeting shows up in the observation.
+>
+> Without it the seat cannot make peace, trade techs, form an alliance, or
+> respond to Brian as anything but a chat partner -- in a five-player game
+> that is most of the strategy space missing. Do this one first.
 
 ### 2. The map overview blows up as the explorer wanders
 
@@ -73,8 +86,8 @@ the orders schema exposes neither.
 
 ### 6. Smaller things
 
-* `GameState.chat_since()` returns our own messages too, so the seat's own
-  chat comes back under "SAID TO YOU".
+* ~~`GameState.chat_since()` returns our own messages too~~ -- fixed
+  2026-09-07 alongside diplomacy.
 * Editing `observe.py` or `orders.py` mid-game does nothing -- the host
   imported them at startup, and restarting it drops the client out of the
   game. Re-importing them per turn would make the seat tunable while
@@ -93,8 +106,9 @@ the orders schema exposes neither.
 * The observation has no *history*: each turn is a fresh snapshot, so
   noticing "that stack has been getting closer for three turns" is left to
   whoever reads it. A short per-turn diff might be worth adding.
-* Auto mode still never wages war and has no diplomacy (and now neither
-  does interactive mode -- see above; fixing it in `client.py` fixes both).
+* Auto mode still never wages war and has no diplomacy. The packets and
+  the `Client` methods exist now, so an auto-mode policy is the only
+  missing piece.
 * `fcgame.py` prints `research: goal -> goal set to X` -- the word "goal"
   twice. Cosmetic, in `agent.py` `manage_research` plus its caller.
 
@@ -110,13 +124,15 @@ The whole client seat is built and verified against freeciv-server 3.2.5
 * `fcbot/state.py` -- fog-limited game state from the packet stream.
 * `fcbot/client.py` -- the action set: `goto`, `do_activity`, `build_city`,
   `change_production`, `buy_production`, `set_research`, `set_research_goal`,
-  `set_rates`, `change_government`, `auto_settler`, `chat`, `end_phase`.
+  `set_rates`, `change_government`, `auto_settler`, `chat`, `end_phase`,
+  and the treaty set: `init_meeting`, `create_clause`, `remove_clause`,
+  `accept_treaty`, `cancel_meeting`, `cancel_pact`.
 * `fcbot/fcmap.py` / `fcbot/fcpath.py` -- topology (iso coords!) and
   pathfinding over known tiles.
 * `fcbot/server.py` -- launches and drives freeciv-server.
 * `fcbot/observe.py`, `fcbot/orders.py`, `fcbot/interactive.py` -- the
   model's seat (above).
-* `tests/` -- 39 tests, all passing.
+* `tests/` -- 59 tests, all passing.
 
 ## Where interactive mode lives
 

@@ -76,6 +76,24 @@ class FakeClient(object):
     def chat(self, text):
         return self._record("chat", text)
 
+    def init_meeting(self, other):
+        return self._record("init_meeting", other)
+
+    def cancel_meeting(self, other):
+        return self._record("cancel_meeting", other)
+
+    def create_clause(self, other, giver, ctype, value=0):
+        return self._record("create_clause", other, giver, ctype, value)
+
+    def remove_clause(self, other, giver, ctype, value=0):
+        return self._record("remove_clause", other, giver, ctype, value)
+
+    def accept_treaty(self, other):
+        return self._record("accept_treaty", other)
+
+    def cancel_pact(self, other, clause=None):
+        return self._record("cancel_pact", other, clause)
+
     def pump(self, timeout=0):
         return []
 
@@ -129,8 +147,8 @@ def build_game():
         1: {"playerno": 1, "name": "Pakal", "nation": 9, "government": 1,
             "flags": state.PLRF_AI, "is_alive": True, "real_embassy": 0},
     }
-    g.diplstates = {(0, 1): {"plr1": 0, "plr2": 1, "type": 1,
-                             "turns_left": 0}}
+    g.diplstates = {(0, 1): {"plr1": 0, "plr2": 1, "type": state.DS_WAR,
+                             "turns_left": 0, "contact_turns_left": 14}}
     g.research = {0: {"id": 0, "researching": 3, "researching_cost": 30,
                       "bulbs_researched": 12, "tech_goal": 4,
                       "total_bulbs_prod": 4,
@@ -272,6 +290,199 @@ class OrdersTest(unittest.TestCase):
     def test_orders_must_be_a_list(self):
         with self.assertRaises(orders.OrderError):
             orders.apply_orders(self.client, {"unit": 11})
+
+
+class DiplomacyStateTest(unittest.TestCase):
+    """The mirror of a meeting, driven the way the server drives it."""
+
+    def setUp(self):
+        self.game = build_game()
+
+    def feed(self, name, **values):
+        self.game.handle("PACKET_DIPLOMACY_" + name, values)
+
+    def open_meeting(self, initiated_from=1):
+        self.feed("INIT_MEETING", counterpart=1,
+                  initiated_from=initiated_from)
+        return self.game.treaties[1]
+
+    def test_a_meeting_is_tracked_from_the_init_packet(self):
+        treaty = self.open_meeting()
+        self.assertTrue(treaty.they_started_it)
+        self.assertEqual(treaty.clauses, [])
+
+    def test_clauses_arrive_and_leave(self):
+        self.open_meeting()
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=1,
+                  type=state.CLAUSE_CEASEFIRE, value=0)
+        self.assertEqual(self.game.treaties[1].clauses,
+                         [{"giver": 1, "type": state.CLAUSE_CEASEFIRE,
+                           "value": 0}])
+        self.feed("REMOVE_CLAUSE", counterpart=1, giver=1,
+                  type=state.CLAUSE_CEASEFIRE, value=0)
+        self.assertEqual(self.game.treaties[1].clauses, [])
+
+    def test_a_new_clause_clears_both_acceptances(self):
+        """The trap the whole schema is shaped around: accepting first and
+        then adding a clause leaves nobody having accepted anything."""
+        treaty = self.open_meeting()
+        self.feed("ACCEPT_TREATY", counterpart=1, I_accepted=True,
+                  other_accepted=True)
+        self.assertTrue(treaty.i_accepted and treaty.other_accepted)
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=0,
+                  type=state.CLAUSE_GOLD, value=50)
+        self.assertFalse(treaty.i_accepted)
+        self.assertFalse(treaty.other_accepted)
+
+    def test_a_second_pact_clause_replaces_the_first(self):
+        treaty = self.open_meeting()
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=0,
+                  type=state.CLAUSE_CEASEFIRE, value=0)
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=0,
+                  type=state.CLAUSE_PEACE, value=0)
+        self.assertEqual([c["type"] for c in treaty.clauses],
+                         [state.CLAUSE_PEACE])
+
+    def test_a_repeated_gold_clause_updates_its_amount(self):
+        treaty = self.open_meeting()
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=0,
+                  type=state.CLAUSE_GOLD, value=50)
+        self.feed("CREATE_CLAUSE", counterpart=1, giver=0,
+                  type=state.CLAUSE_GOLD, value=80)
+        self.assertEqual([c["value"] for c in treaty.clauses], [80])
+
+    def test_cancelling_the_meeting_forgets_it(self):
+        self.open_meeting()
+        self.feed("CANCEL_MEETING", counterpart=1, initiated_from=1)
+        self.assertEqual(self.game.treaties, {})
+
+    def test_talking_needs_contact_or_an_embassy(self):
+        self.assertTrue(self.game.can_meet(1))
+        self.game.diplstates[(0, 1)]["contact_turns_left"] = 0
+        self.assertFalse(self.game.can_meet(1))
+        self.game.players[0]["real_embassy"] = 1 << 1
+        self.assertTrue(self.game.can_meet(1))
+
+
+class DiplomacyOrderTest(unittest.TestCase):
+    def setUp(self):
+        self.game = build_game()
+        self.client = FakeClient(self.game)
+
+    def run_orders(self, orders_list):
+        return orders.apply_orders(self.client, orders_list)
+
+    def test_an_offer_opens_the_meeting_and_accepts_last(self):
+        results = self.run_orders(
+            [{"diplomacy": "offer", "with": "Pakal",
+              "clauses": ["ceasefire"]}])
+        self.assertNotIn("FAILED", results[0])
+        self.assertEqual(self.client.calls, [
+            ("init_meeting", 1),
+            ("create_clause", 1, 0, state.CLAUSE_CEASEFIRE, 0),
+            ("accept_treaty", 1),
+        ])
+
+    def test_a_player_can_be_named_by_nation_or_number(self):
+        for who in ("Pakal", "Roman", 1):
+            self.client.calls = []
+            self.run_orders([{"diplomacy": "meet", "with": who}])
+            self.assertEqual(self.client.calls, [("init_meeting", 1)])
+
+    def test_clauses_carry_values_and_a_giver(self):
+        self.run_orders([{"diplomacy": "offer", "with": "Pakal", "clauses": [
+            "peace",
+            {"type": "gold", "value": 30},
+            {"type": "advance", "value": "Currency", "from": "them"},
+            {"embassy": None, "from": "them"},
+        ], "accept": False}])
+        self.assertEqual(self.client.calls[1:], [
+            ("create_clause", 1, 0, state.CLAUSE_PEACE, 0),
+            ("create_clause", 1, 0, state.CLAUSE_GOLD, 30),
+            ("create_clause", 1, 1, state.CLAUSE_ADVANCE, 3),
+            ("create_clause", 1, 1, state.CLAUSE_EMBASSY, 0),
+        ])
+
+    def test_a_pact_we_cannot_reach_is_refused_before_it_is_sent(self):
+        """Ceasefire only comes from war, so at peace it is a mistake worth
+        catching here rather than losing a turn to."""
+        self.game.diplstates[(0, 1)]["type"] = state.DS_PEACE
+        results = self.run_orders([{"diplomacy": "offer", "with": "Pakal",
+                                    "clauses": ["ceasefire"]}])
+        self.assertTrue(results[0].startswith("FAILED"))
+        self.assertIn("only reachable from war", results[0])
+        self.assertEqual(self.client.calls, [])
+
+    def test_gold_we_do_not_have_is_refused(self):
+        results = self.run_orders([{"diplomacy": "offer", "with": "Pakal",
+                                    "clauses": [{"gold": 5000}]}])
+        self.assertTrue(results[0].startswith("FAILED"))
+        self.assertIn("we have 50", results[0])
+
+    def test_accepting_needs_a_meeting(self):
+        results = self.run_orders([{"diplomacy": "accept", "with": "Pakal"}])
+        self.assertTrue(results[0].startswith("FAILED"))
+
+    def test_accepting_an_offer_they_made(self):
+        self.game.handle("PACKET_DIPLOMACY_INIT_MEETING",
+                         {"counterpart": 1, "initiated_from": 1})
+        self.game.handle("PACKET_DIPLOMACY_CREATE_CLAUSE",
+                         {"counterpart": 1, "giver": 1,
+                          "type": state.CLAUSE_CEASEFIRE, "value": 0})
+        self.game.handle("PACKET_DIPLOMACY_ACCEPT_TREATY",
+                         {"counterpart": 1, "I_accepted": False,
+                          "other_accepted": True})
+        results = self.run_orders([{"diplomacy": "accept", "with": "Pakal"}])
+        self.assertEqual(self.client.calls, [("accept_treaty", 1)])
+        self.assertIn("accepted", results[0])
+
+    def test_breaking_a_pact_goes_one_step_down(self):
+        self.run_orders([{"diplomacy": "break", "with": "Pakal"}])
+        self.assertEqual(self.client.calls, [("cancel_pact", 1, None)])
+
+    def test_an_unknown_player_is_reported_not_guessed(self):
+        results = self.run_orders([{"diplomacy": "meet", "with": "Nobody"}])
+        self.assertTrue(results[0].startswith("FAILED"))
+        self.assertEqual(self.client.calls, [])
+
+    def test_lapsed_contact_is_refused_with_a_reason(self):
+        self.game.diplstates[(0, 1)]["contact_turns_left"] = 0
+        results = self.run_orders([{"diplomacy": "offer", "with": "Pakal",
+                                    "clauses": ["ceasefire"]}])
+        self.assertIn("no embassy and no recent contact", results[0])
+
+
+class DiplomacyObservationTest(unittest.TestCase):
+    def setUp(self):
+        self.game = build_game()
+        self.game.handle("PACKET_DIPLOMACY_INIT_MEETING",
+                         {"counterpart": 1, "initiated_from": 1})
+        self.game.handle("PACKET_DIPLOMACY_CREATE_CLAUSE",
+                         {"counterpart": 1, "giver": 1,
+                          "type": state.CLAUSE_CEASEFIRE, "value": 0})
+        self.game.handle("PACKET_DIPLOMACY_ACCEPT_TREATY",
+                         {"counterpart": 1, "I_accepted": False,
+                          "other_accepted": True})
+        self.obs = observe.observation(self.game)
+
+    def test_the_pending_offer_is_visible(self):
+        meeting = self.obs["meetings"][0]
+        self.assertEqual(meeting["with"], "Pakal")
+        self.assertTrue(meeting["they_opened_it"])
+        self.assertTrue(meeting["waiting_on_us"])
+        self.assertEqual(meeting["clauses"][0]["clause"], "ceasefire")
+        self.assertFalse(meeting["clauses"][0]["given_by_us"])
+
+    def test_the_text_says_who_is_waiting(self):
+        text = observe.to_text(self.obs)
+        self.assertIn("MEETING WITH Pakal", text)
+        self.assertIn("THEY ARE WAITING ON US", text)
+
+    def test_whether_we_can_talk_at_all_is_stated(self):
+        entry = self.obs["diplomacy"][0]
+        self.assertTrue(entry["can_negotiate_now"])
+        self.assertTrue(entry["in_meeting"])
+        self.assertEqual(entry["contact_turns_left"], 14)
 
 
 class InteractiveFileTest(unittest.TestCase):

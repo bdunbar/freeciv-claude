@@ -245,6 +245,56 @@ class Client(object):
                        government=government_id)
         return True
 
+    # -- diplomacy -----------------------------------------------------
+    #
+    # A treaty is a meeting with clauses on the table. Either side opens the
+    # meeting, both add clauses, and it takes effect only once both have
+    # accepted -- where "accept" means accepting the table as it stands, so
+    # any later clause clears both acceptances.
+
+    def init_meeting(self, counterpart):
+        """Ask to open a meeting. The server refuses unless we have contact
+        or an embassy (could_meet_with_player)."""
+        self.conn.send("PACKET_DIPLOMACY_INIT_MEETING_REQ",
+                       counterpart=counterpart)
+        return True
+
+    def cancel_meeting(self, counterpart):
+        self.conn.send("PACKET_DIPLOMACY_CANCEL_MEETING_REQ",
+                       counterpart=counterpart)
+        return True
+
+    def create_clause(self, counterpart, giver, clause_type, value=0):
+        """Put a clause on the table. `giver` is the player number of
+        whoever hands the thing over -- us or them."""
+        self.conn.send("PACKET_DIPLOMACY_CREATE_CLAUSE_REQ",
+                       counterpart=counterpart, giver=giver,
+                       type=clause_type, value=value)
+        return True
+
+    def remove_clause(self, counterpart, giver, clause_type, value=0):
+        self.conn.send("PACKET_DIPLOMACY_REMOVE_CLAUSE_REQ",
+                       counterpart=counterpart, giver=giver,
+                       type=clause_type, value=value)
+        return True
+
+    def accept_treaty(self, counterpart):
+        """Toggle our acceptance of the treaty as it currently stands."""
+        self.conn.send("PACKET_DIPLOMACY_ACCEPT_TREATY_REQ",
+                       counterpart=counterpart)
+        return True
+
+    def cancel_pact(self, other, clause=None):
+        """Break what we have with `other`, one step at a time: alliance ->
+        armistice/peace -> war. CLAUSE_CEASEFIRE is the client's dummy value
+        for "downgrade whatever we have" (client/gui-gtk-3.22/plrdlg.c);
+        CLAUSE_VISION and CLAUSE_SHARED_TILES withdraw just those instead."""
+        self.conn.send("PACKET_DIPLOMACY_CANCEL_PACT",
+                       other_player_id=other,
+                       clause=state.CLAUSE_CEASEFIRE if clause is None
+                              else clause)
+        return True
+
     def end_phase(self):
         self.conn.send("PACKET_PLAYER_PHASE_DONE", turn=self.game.turn)
         self._phase_started = False

@@ -165,6 +165,287 @@ def _city_order(client, order):
     return "city %s: sent %s" % (city.get("name", cid), ", ".join(done))
 
 
+# -- diplomacy ----------------------------------------------------------
+#
+# A treaty is a meeting with clauses on the table, and it only takes effect
+# when both sides have accepted the table as it stands. Adding a clause
+# clears both acceptances, so "offer" always accepts last.
+
+CLAUSE_TYPES = {
+    "advance": state.CLAUSE_ADVANCE,
+    "tech": state.CLAUSE_ADVANCE,
+    "gold": state.CLAUSE_GOLD,
+    "map": state.CLAUSE_MAP,
+    "worldmap": state.CLAUSE_MAP,
+    "seamap": state.CLAUSE_SEAMAP,
+    "city": state.CLAUSE_CITY,
+    "ceasefire": state.CLAUSE_CEASEFIRE,
+    "cease-fire": state.CLAUSE_CEASEFIRE,
+    "peace": state.CLAUSE_PEACE,
+    "alliance": state.CLAUSE_ALLIANCE,
+    "vision": state.CLAUSE_VISION,
+    "shared_vision": state.CLAUSE_VISION,
+    "embassy": state.CLAUSE_EMBASSY,
+    "shared_tiles": state.CLAUSE_SHARED_TILES,
+}
+
+#: Which existing diplomatic states a pact clause can be reached from
+#: (common/player.c pplayer_can_make_treaty).
+_PACT_FROM = {
+    state.CLAUSE_CEASEFIRE: (state.DS_WAR,),
+    state.CLAUSE_PEACE: (state.DS_WAR, state.DS_CEASEFIRE),
+}
+
+
+def _player(game, wanted):
+    """A player, named by leader, nation, username or number."""
+    if isinstance(wanted, bool):
+        raise OrderError("'with' needs a player, got %r" % (wanted,))
+    if isinstance(wanted, int):
+        if wanted not in game.players:
+            raise OrderError("there is no player %d" % wanted)
+        return wanted
+    wanted_l = str(wanted).lower()
+    for pn, p in sorted(game.players.items()):
+        if pn == game.player_no:
+            continue
+        nation = game.ruleset.nations.get(p.get("nation"), {})
+        names = [p.get("name"), p.get("username"),
+                 nation.get("name"), nation.get("rule_name"),
+                 nation.get("adjective"), nation.get("plural")]
+        if wanted_l in [str(n).lower() for n in names if n]:
+            return pn
+    raise OrderError("no player called %r -- the diplomacy section of the "
+                     "observation lists everyone we have met" % (wanted,))
+
+
+def _clause(client, other, spec):
+    """One clause, as (giver, clause type, value).
+
+    Accepts a bare name ("peace"), a {"type": ..., "from": ..., "value": ...}
+    object, or the compact {"gold": 50, "from": "me"} form.
+    """
+    game = client.game
+    if isinstance(spec, str):
+        spec = {"type": spec}
+    if not isinstance(spec, dict):
+        raise OrderError("a clause is a name or an object, got %r" % (spec,))
+    spec = dict(spec)
+    giver_spec = spec.pop("from", "me")
+    value = spec.pop("value", None)
+
+    if "type" in spec:
+        name = str(spec.pop("type")).lower()
+    else:
+        # compact form: the clause name is the key, its value the value
+        keys = [k for k in spec if str(k).lower() in CLAUSE_TYPES]
+        if len(keys) != 1:
+            raise OrderError("clause %r: say which clause it is, e.g. "
+                             '"peace" or {"type": "gold", "value": 50}'
+                             % (spec,))
+        name = str(keys[0]).lower()
+        value = spec.pop(keys[0])
+    if name not in CLAUSE_TYPES:
+        raise OrderError("unknown clause %r (known: %s)" %
+                         (name, ", ".join(sorted(CLAUSE_TYPES))))
+    ctype = CLAUSE_TYPES[name]
+
+    if str(giver_spec).lower() in ("me", "us", "self"):
+        giver = game.player_no
+    elif str(giver_spec).lower() in ("them", "they", "other", "you"):
+        giver = other
+    else:
+        giver = _player(game, giver_spec)
+    if giver not in (game.player_no, other):
+        raise OrderError("a clause has to be given by us or by the other "
+                         "side, not by %s" % _player_label(game, giver))
+
+    number = 0
+    if ctype == state.CLAUSE_ADVANCE:
+        if value is None:
+            raise OrderError("an advance clause needs which tech to trade")
+        number, _tech = _lookup(game.ruleset.techs, value, "tech")
+    elif ctype == state.CLAUSE_GOLD:
+        if value is None:
+            raise OrderError("a gold clause needs an amount")
+        number = int(value)
+        if number <= 0:
+            raise OrderError("gold has to be more than nothing, got %d" % number)
+        if giver == game.player_no:
+            have = (game.me or {}).get("gold", 0)
+            if number > have:
+                raise OrderError("we cannot give %d gold; we have %d"
+                                 % (number, have))
+    elif ctype == state.CLAUSE_CITY:
+        if value is None:
+            raise OrderError("a city clause needs which city to hand over")
+        number = _city_id(game, value, giver)
+
+    # What the server would reject anyway, caught here where it can be read.
+    ds = game.diplstate(other)
+    now = ds.get("type") if ds else None
+    if ctype in state.PACT_CLAUSES:
+        already = {state.CLAUSE_CEASEFIRE: (state.DS_CEASEFIRE,),
+                   state.CLAUSE_PEACE: (state.DS_PEACE, state.DS_ARMISTICE),
+                   state.CLAUSE_ALLIANCE: (state.DS_ALLIANCE,)}[ctype]
+        if now in already:
+            raise OrderError("we are already at %s with %s" %
+                             (name, _player_label(game, other)))
+        allowed = _PACT_FROM.get(ctype)
+        if allowed is not None and now not in allowed:
+            raise OrderError(
+                "%s is only reachable from %s, and we are at %s with %s" %
+                (name, " or ".join(state.DIPLSTATE_NAMES[d] for d in allowed),
+                 state.DIPLSTATE_NAMES.get(now, "no contact"),
+                 _player_label(game, other)))
+    if ctype == state.CLAUSE_EMBASSY:
+        # The giver's nation is the one an embassy gets established in.
+        if giver == game.player_no and game.gives_embassy_to(other):
+            raise OrderError("%s already has an embassy with us" %
+                             _player_label(game, other))
+        if giver == other and game.has_embassy_with(other):
+            raise OrderError("we already have an embassy with %s" %
+                             _player_label(game, other))
+    return giver, ctype, number
+
+
+def _city_id(game, value, giver):
+    if isinstance(value, int) or str(value).isdigit():
+        cid = int(value)
+        if cid in game.cities or cid in game.short_cities:
+            return cid
+        raise OrderError("we know of no city %d" % cid)
+    for table in (game.cities, game.short_cities):
+        for cid, c in table.items():
+            if str(c.get("name", "")).lower() == str(value).lower():
+                return cid
+    raise OrderError("we know of no city called %r" % (value,))
+
+
+def _player_label(game, pn):
+    p = game.players.get(pn)
+    return p.get("name") if p else "player %s" % pn
+
+
+def _clause_text(game, giver, ctype, value):
+    name = state.CLAUSE_NAMES.get(ctype, str(ctype))
+    who = "we give" if giver == game.player_no else "they give"
+    if ctype in state.PACT_CLAUSES:
+        return name
+    if ctype == state.CLAUSE_ADVANCE:
+        return "%s %s" % (who, _name_of(game.ruleset.techs, value))
+    if ctype == state.CLAUSE_GOLD:
+        return "%s %d gold" % (who, value)
+    if ctype == state.CLAUSE_CITY:
+        city = game.cities.get(value) or game.short_cities.get(value) or {}
+        return "%s %s" % (who, city.get("name", value))
+    return "%s %s" % (who, name)
+
+
+def _name_of(table, key):
+    item = table.get(key) or {}
+    return item.get("rule_name") or item.get("name") or str(key)
+
+
+def _diplomacy_order(client, order):
+    game = client.game
+    what = str(order["diplomacy"]).lower().replace("-", "_").replace(" ", "_")
+    if "with" not in order:
+        raise OrderError("a diplomacy order needs 'with': which player")
+    other = _player(game, order["with"])
+    label = _player_label(game, other)
+    treaty = game.treaties.get(other)
+
+    if what in ("meet", "open", "init", "init_meeting"):
+        if treaty is not None:
+            return "already in a meeting with %s" % label
+        if not game.can_meet(other):
+            raise OrderError("cannot meet %s: no embassy and no recent "
+                             "contact" % label)
+        client.init_meeting(other)
+        return "asked %s for a meeting" % label
+
+    if what in ("offer", "propose"):
+        specs = order.get("clauses")
+        if specs is None:
+            raise OrderError("an offer needs 'clauses', e.g. "
+                             '["peace"] or [{"type": "gold", "value": 50}]')
+        if not isinstance(specs, list):
+            specs = [specs]
+        clauses = [_clause(client, other, spec) for spec in specs]
+        opened = False
+        if treaty is None:
+            if not game.can_meet(other):
+                raise OrderError("cannot meet %s: no embassy and no recent "
+                                 "contact" % label)
+            client.init_meeting(other)
+            opened = True
+        for giver, ctype, value in clauses:
+            client.create_clause(other, giver, ctype, value)
+        said = ", ".join(_clause_text(game, *c) for c in clauses)
+        # Accepting last is what makes the offer an offer: every clause we
+        # just added cleared both sides' acceptance.
+        if order.get("accept", True):
+            client.accept_treaty(other)
+            return "offered %s: %s (and accepted our side)%s" % (
+                label, said, " -- meeting opened" if opened else "")
+        return "put to %s: %s%s" % (label, said,
+                                    " -- meeting opened" if opened else "")
+
+    if what == "accept":
+        if treaty is None:
+            raise OrderError("no meeting with %s to accept -- offer "
+                             "something first" % label)
+        if treaty.i_accepted:
+            return "already accepted the treaty with %s" % label
+        client.accept_treaty(other)
+        return "accepted the treaty with %s (%d clauses)" % (
+            label, len(treaty.clauses))
+
+    if what in ("unaccept", "retract"):
+        if treaty is None or not treaty.i_accepted:
+            raise OrderError("we have not accepted anything with %s" % label)
+        client.accept_treaty(other)       # the request toggles
+        return "withdrew our acceptance with %s" % label
+
+    if what in ("withdraw", "remove", "remove_clause"):
+        specs = order.get("clauses")
+        if specs is None:
+            raise OrderError("say which 'clauses' to take off the table")
+        if not isinstance(specs, list):
+            specs = [specs]
+        if treaty is None:
+            raise OrderError("no meeting with %s" % label)
+        for spec in specs:
+            giver, ctype, value = _clause(client, other, spec)
+            client.remove_clause(other, giver, ctype, value)
+        return "took %d clause(s) off the table with %s" % (len(specs), label)
+
+    if what in ("cancel_meeting", "cancel", "close", "walk_away"):
+        if treaty is None:
+            return "no meeting with %s to cancel" % label
+        client.cancel_meeting(other)
+        return "walked out of the meeting with %s" % label
+
+    if what in ("break", "break_treaty", "cancel_pact", "declare_war"):
+        ds = game.diplstate(other)
+        now = state.DIPLSTATE_NAMES.get(ds.get("type")) if ds else "no contact"
+        client.cancel_pact(other)
+        return ("broke our %s with %s -- one step down (alliance -> peace "
+                "-> war)" % (now, label))
+
+    if what in ("stop_vision", "cancel_vision", "stop_shared_vision"):
+        client.cancel_pact(other, state.CLAUSE_VISION)
+        return "stopped giving %s shared vision" % label
+
+    if what in ("stop_shared_tiles", "cancel_shared_tiles"):
+        client.cancel_pact(other, state.CLAUSE_SHARED_TILES)
+        return "stopped sharing tiles with %s" % label
+
+    raise OrderError("unknown diplomacy action %r (meet, offer, accept, "
+                     "withdraw, cancel_meeting, break, stop_vision)" % what)
+
+
 def _player_order(client, order):
     game = client.game
 
@@ -216,6 +497,8 @@ def apply_orders(client, orders):
         try:
             if "unit" in order:
                 results.append(_unit_order(client, order))
+            elif "diplomacy" in order:
+                results.append(_diplomacy_order(client, order))
             elif "city" in order:
                 results.append(_city_order(client, order))
             else:

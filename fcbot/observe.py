@@ -370,24 +370,87 @@ def _diplomacy(game):
                      if ds else "no contact",
             "turns_left": ds.get("turns_left") if ds else None,
             "we_have_embassy": game.has_embassy_with(pn),
+            "they_have_embassy": game.gives_embassy_to(pn),
+            # An embassy is permanent; plain contact lapses, and once it does
+            # there is no way to talk to them until we meet again.
+            "contact_turns_left": ds.get("contact_turns_left") if ds else 0,
+            "can_negotiate_now": game.can_meet(pn),
+            "in_meeting": pn in game.treaties,
         })
     return out
+
+
+def _meetings(game):
+    """Treaty meetings currently open, ours and theirs alike.
+
+    A meeting only becomes a treaty when both sides have accepted the table
+    as it stands -- and adding a clause clears both acceptances, so a
+    counter-offer always has to be re-accepted.
+    """
+    out = []
+    for other, treaty in sorted(game.treaties.items()):
+        clauses = []
+        for c in treaty.clauses:
+            clauses.append({
+                "giver": _player_name(game, c["giver"]),
+                "given_by_us": c["giver"] == game.player_no,
+                "clause": state.CLAUSE_NAMES.get(c["type"], str(c["type"])),
+                "value": _clause_value(game, c["type"], c["value"]),
+            })
+        out.append({
+            "with": _player_name(game, other),
+            "opened_by": _player_name(game, treaty.initiated_from),
+            "they_opened_it": treaty.they_started_it,
+            "clauses": clauses,
+            "we_accepted": treaty.i_accepted,
+            "they_accepted": treaty.other_accepted,
+            "waiting_on_us": treaty.other_accepted and not treaty.i_accepted,
+        })
+    return out
+
+
+def _clause_value(game, ctype, value):
+    if ctype == state.CLAUSE_ADVANCE:
+        return _name(game.ruleset.techs, value)
+    if ctype == state.CLAUSE_GOLD:
+        return value
+    if ctype == state.CLAUSE_CITY:
+        city = game.cities.get(value) or game.short_cities.get(value) or {}
+        return city.get("name", value)
+    return None
+
+
+#: Events that are really the other side talking to us -- an AI's reason for
+#: refusing, a treaty signed or broken. They read as conversation, so they go
+#: with the diplomacy rather than in the pile of city and unit notifications.
+DIPLOMATIC_EVENTS = ("E_DIPLOMACY", "E_FIRST_CONTACT", "E_TREATY_")
+
+
+def _is_diplomatic(event_name):
+    return any(event_name.startswith(prefix) if prefix.endswith("_")
+               else event_name == prefix
+               for prefix in DIPLOMATIC_EVENTS)
 
 
 def _messages(game, since):
     chat = [{"turn": m.turn, "from": m.speaker or m.sender, "text": m.text}
             for m in game.chat_since(since)]
     events = {}
+    diplomatic = []
     for m in game.events_since(since):
-        events.setdefault(m.event_name, []).append(m.text)
-    return chat, events
+        if _is_diplomatic(m.event_name):
+            diplomatic.append({"turn": m.turn, "event": m.event_name,
+                               "text": m.text})
+        else:
+            events.setdefault(m.event_name, []).append(m.text)
+    return chat, events, diplomatic
 
 
 def observation(game, since_message=0):
     """The whole situation, as a JSON-serialisable dict."""
     centre = _my_centre(game)
     view = MapView(game, centre, _overview_radius(game, centre))
-    chat, events = _messages(game, since_message)
+    chat, events, diplomatic = _messages(game, since_message)
 
     cities = [_city(game, c) for c in
               sorted(game.my_cities().values(), key=lambda c: c["id"])]
@@ -410,6 +473,8 @@ def observation(game, since_message=0):
         },
         "foreign": _foreign(game),
         "diplomacy": _diplomacy(game),
+        "meetings": _meetings(game),
+        "diplomatic_news": diplomatic,
         "chat_since_last_turn": chat,
         "events_since_last_turn": events,
         "message_mark": len(game.messages),
@@ -490,9 +555,43 @@ def to_text(obs):
         out.append("")
         out.append("DIPLOMACY")
         for d in obs["diplomacy"]:
-            out.append("  %-14s %-10s %s%s" %
+            notes = []
+            if d["we_have_embassy"]:
+                notes.append("we have an embassy")
+            if d.get("they_have_embassy"):
+                notes.append("they have an embassy")
+            if d.get("can_negotiate_now"):
+                if not d["we_have_embassy"] and not d.get("they_have_embassy"):
+                    notes.append("contact for %s more turns" %
+                                 d.get("contact_turns_left"))
+            else:
+                notes.append("CANNOT TALK -- no embassy, contact lapsed")
+            if d.get("in_meeting"):
+                notes.append("meeting open")
+            out.append("  %-14s %-10s %-10s %s" %
                        (d["player"], d["nation"], d["state"],
-                        "  (embassy)" if d["we_have_embassy"] else ""))
+                        "; ".join(notes)))
+
+    for m in obs.get("meetings") or []:
+        out.append("")
+        out.append("MEETING WITH %s (%s opened it)" %
+                   (m["with"], "they" if m["they_opened_it"] else "we"))
+        if not m["clauses"]:
+            out.append("    nothing on the table yet")
+        for c in m["clauses"]:
+            value = "" if c["value"] is None else " %s" % (c["value"],)
+            out.append("    %s: %s%s" % (c["giver"], c["clause"], value))
+        out.append("    accepted -- us: %s, them: %s%s" %
+                   (m["we_accepted"], m["they_accepted"],
+                    "   <- THEY ARE WAITING ON US" if m["waiting_on_us"]
+                    else ""))
+
+    news = obs.get("diplomatic_news") or []
+    if news:
+        out.append("")
+        out.append("DIPLOMATIC NEWS")
+        for item in news:
+            out.append("  (T%s) %s" % (item["turn"], item["text"]))
 
     if obs["chat_since_last_turn"]:
         out.append("")

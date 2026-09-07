@@ -80,6 +80,40 @@ DIPLSTATE_NAMES = {
     4: "alliance", 5: "no contact", 6: "team",
 }
 
+DS_ARMISTICE, DS_WAR, DS_CEASEFIRE, DS_PEACE = 0, 1, 2, 3
+DS_ALLIANCE, DS_NO_CONTACT, DS_TEAM = 4, 5, 6
+
+# enum clause_type (common/diptreaty.h) -- what one side puts on the table.
+CLAUSE_ADVANCE = 0
+CLAUSE_GOLD = 1
+CLAUSE_MAP = 2
+CLAUSE_SEAMAP = 3
+CLAUSE_CITY = 4
+CLAUSE_CEASEFIRE = 5
+CLAUSE_PEACE = 6
+CLAUSE_ALLIANCE = 7
+CLAUSE_VISION = 8
+CLAUSE_EMBASSY = 9
+CLAUSE_SHARED_TILES = 10
+
+CLAUSE_NAMES = {
+    CLAUSE_ADVANCE: "advance",
+    CLAUSE_GOLD: "gold",
+    CLAUSE_MAP: "map",
+    CLAUSE_SEAMAP: "seamap",
+    CLAUSE_CITY: "city",
+    CLAUSE_CEASEFIRE: "ceasefire",
+    CLAUSE_PEACE: "peace",
+    CLAUSE_ALLIANCE: "alliance",
+    CLAUSE_VISION: "vision",
+    CLAUSE_EMBASSY: "embassy",
+    CLAUSE_SHARED_TILES: "shared_tiles",
+}
+
+#: The three clauses that set the diplomatic state itself. A treaty holds at
+#: most one of them: adding a second replaces the first (common/diptreaty.c).
+PACT_CLAUSES = frozenset([CLAUSE_CEASEFIRE, CLAUSE_PEACE, CLAUSE_ALLIANCE])
+
 #: TILE_INFO's `resource` carries this when the tile has none.
 NO_RESOURCE = 250        # MAX_EXTRA_TYPES
 
@@ -129,6 +163,64 @@ class Ruleset(object):
         return u["rule_name"] if u else "?"
 
 
+class Treaty(object):
+    """One diplomatic meeting in progress, mirrored from the server.
+
+    The server owns the real treaty; every INIT/CREATE/REMOVE/ACCEPT packet
+    is a report of what it now holds, so this only has to apply the same
+    edits the client library does (client/clitreaty.c -> common/diptreaty.c).
+    """
+
+    def __init__(self, counterpart, initiated_from=None):
+        self.counterpart = counterpart
+        self.initiated_from = initiated_from
+        self.clauses = []            # [{"giver": plr, "type": int, "value": int}]
+        self.i_accepted = False
+        self.other_accepted = False
+
+    @property
+    def they_started_it(self):
+        return self.initiated_from == self.counterpart
+
+    def add_clause(self, giver, type_, value):
+        """Mirror common/diptreaty.c add_clause(); any change clears both
+        acceptances, which is why accepting has to come after the offer."""
+        for clause in self.clauses:
+            if (clause["type"] == type_ and clause["giver"] == giver
+                    and clause["value"] == value):
+                return False         # already on the table
+            if type_ in PACT_CLAUSES and clause["type"] in PACT_CLAUSES:
+                clause["type"] = type_
+                self._unaccept()
+                return True
+            if (type_ == CLAUSE_GOLD and clause["type"] == CLAUSE_GOLD
+                    and clause["giver"] == giver):
+                clause["value"] = value
+                self._unaccept()
+                return True
+        self.clauses.append({"giver": giver, "type": type_, "value": value})
+        self._unaccept()
+        return True
+
+    def remove_clause(self, giver, type_, value):
+        for i, clause in enumerate(self.clauses):
+            if (clause["type"] == type_ and clause["giver"] == giver
+                    and clause["value"] == value):
+                del self.clauses[i]
+                self._unaccept()
+                return True
+        return False
+
+    def _unaccept(self):
+        self.i_accepted = False
+        self.other_accepted = False
+
+    def __repr__(self):
+        return "<Treaty with %s, %d clauses, accepted %s/%s>" % (
+            self.counterpart, len(self.clauses),
+            self.i_accepted, self.other_accepted)
+
+
 class GameState(object):
     def __init__(self):
         self.ruleset = Ruleset()
@@ -142,6 +234,7 @@ class GameState(object):
         self.research = {}       # research id -> RESEARCH_INFO
         self.conns = {}
         self.diplstates = {}     # (plr1, plr2) -> PLAYER_DIPLSTATE
+        self.treaties = {}       # counterpart player number -> Treaty
         self.player_no = None
         self.conn_id = None
         self.turn = 0
@@ -202,6 +295,30 @@ class GameState(object):
         return (self.diplstates.get((me, other))
                 or self.diplstates.get((other, me)))
 
+    def can_meet(self, other):
+        """Whether a meeting with `other` is possible at all: an embassy
+        either way, or contact still in date (common/diptreaty.c
+        could_meet_with_player)."""
+        if other == self.player_no:
+            return False
+        p = self.players.get(other)
+        if not p or not p.get("is_alive", True):
+            return False
+        if self.has_embassy_with(other) or self.gives_embassy_to(other):
+            return True
+        for pair in ((self.player_no, other), (other, self.player_no)):
+            ds = self.diplstates.get(pair)
+            if ds and ds.get("contact_turns_left", 0) > 0:
+                return True
+        return False
+
+    def gives_embassy_to(self, other):
+        """Whether `other` has an embassy with us."""
+        p = self.players.get(other)
+        if not p:
+            return False
+        return bool(p.get("real_embassy", 0) >> self.player_no & 1)
+
     def has_embassy_with(self, other):
         me = self.me
         if not me:
@@ -213,8 +330,13 @@ class GameState(object):
         return bool(player.get("flags", 0) & PLRF_AI)
 
     def chat_since(self, index=0):
-        """Messages a person typed, from `index` onward."""
-        return [m for m in self.messages[index:] if m.is_chat]
+        """Messages *another* person typed, from `index` onward.
+
+        Our own chat comes back down the wire like everyone else's; echoing
+        it back as something said to us is only confusing.
+        """
+        return [m for m in self.messages[index:]
+                if m.is_chat and m.conn_id != self.conn_id]
 
     def events_since(self, index=0):
         """Game notifications (city lost, tech learned, ...) from `index` on."""
@@ -304,6 +426,7 @@ def _h_player_info(s, v):
 
 def _h_player_remove(s, v):
     s.players.pop(v["playerno"], None)
+    s.treaties.pop(v["playerno"], None)
 
 
 def _h_research_info(s, v):
@@ -394,7 +517,47 @@ def _h_diplstate(s, v):
     s.diplstates[(v["plr1"], v["plr2"])] = v
 
 
+# -- diplomatic meetings ------------------------------------------------
+#
+# The server reports every meeting to both sides, so all five packets are
+# just edits to apply to our mirror of the treaty.
+
+def _h_init_meeting(s, v):
+    other = v["counterpart"]
+    s.treaties[other] = Treaty(other, v.get("initiated_from"))
+
+
+def _h_cancel_meeting(s, v):
+    # Also how a *concluded* treaty ends: once both sides accept, the server
+    # executes it and cancels the meeting (server/diplhand.c).
+    s.treaties.pop(v["counterpart"], None)
+
+
+def _h_create_clause(s, v):
+    treaty = s.treaties.get(v["counterpart"])
+    if treaty is not None:
+        treaty.add_clause(v["giver"], v["type"], v["value"])
+
+
+def _h_remove_clause(s, v):
+    treaty = s.treaties.get(v["counterpart"])
+    if treaty is not None:
+        treaty.remove_clause(v["giver"], v["type"], v["value"])
+
+
+def _h_accept_treaty(s, v):
+    treaty = s.treaties.get(v["counterpart"])
+    if treaty is not None:
+        treaty.i_accepted = bool(v["I_accepted"])
+        treaty.other_accepted = bool(v["other_accepted"])
+
+
 _HANDLERS["PACKET_RULESET_CONTROL"] = _h_ruleset_control
 _HANDLERS["PACKET_RULESET_GAME"] = _h_ruleset_game
 _HANDLERS["PACKET_RULESET_TERRAIN_CONTROL"] = _h_terrain_control
 _HANDLERS["PACKET_PLAYER_DIPLSTATE"] = _h_diplstate
+_HANDLERS["PACKET_DIPLOMACY_INIT_MEETING"] = _h_init_meeting
+_HANDLERS["PACKET_DIPLOMACY_CANCEL_MEETING"] = _h_cancel_meeting
+_HANDLERS["PACKET_DIPLOMACY_CREATE_CLAUSE"] = _h_create_clause
+_HANDLERS["PACKET_DIPLOMACY_REMOVE_CLAUSE"] = _h_remove_clause
+_HANDLERS["PACKET_DIPLOMACY_ACCEPT_TREATY"] = _h_accept_treaty

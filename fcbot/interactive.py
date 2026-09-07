@@ -104,6 +104,25 @@ class InteractiveAgent(object):
         return results
 
 
+HOW_DIPLOMACY_WORKS = (
+    "Diplomacy: talk to a player only while 'can_negotiate_now' is true in "
+    "the diplomacy section -- an embassy makes that permanent, plain contact "
+    "lapses after a few turns. 'offer' opens a meeting if there is none, "
+    "puts the clauses on the table and accepts our side; the deal happens "
+    "when both sides have accepted, and any new clause clears both "
+    "acceptances. Open meetings, and who is waiting on whom, are in the "
+    "'meetings' section. Clauses: \"ceasefire\" (only from war), "
+    "\"peace\" (from war or ceasefire), \"alliance\", \"embassy\", "
+    "\"vision\", \"shared_tiles\", \"map\", \"seamap\", and with a "
+    "value {\"type\": \"gold\", \"value\": 50}, "
+    "{\"type\": \"advance\", \"value\": \"Alphabet\"}, "
+    "{\"type\": \"city\", \"value\": \"Roma\"}. Add "
+    "\"from\": \"them\" to ask for a thing instead of giving it (the "
+    "default is \"me\"). Other actions: \"meet\", \"withdraw\" (take "
+    "clauses back off the table), \"cancel_meeting\", \"break\" (drop a "
+    "step: alliance -> peace -> war), \"stop_vision\"."
+)
+
 HOW_TO_ANSWER = (
     "Write a JSON list of orders to the path in 'orders_go_in'. Examples: "
     '{"unit": 112, "goto": [14, 22], "then": "found_city"}, '
@@ -115,9 +134,12 @@ HOW_TO_ANSWER = (
     '{"research_goal": "Currency"}, '
     '{"rates": {"tax": 30, "luxury": 0, "science": 70}}, '
     '{"government": "Monarchy"}, '
-    '{"chat": "Nice city."}. '
+    '{"chat": "Nice city."}, '
+    '{"diplomacy": "offer", "with": "Pakal", "clauses": ["ceasefire"]}, '
+    '{"diplomacy": "accept", "with": "Pakal"}. '
     "A tile is either an index or an [x, y] map coordinate. Orders are "
     "applied in order and each one's outcome is reported back."
+    " " + HOW_DIPLOMACY_WORKS
 )
 
 
