@@ -112,6 +112,42 @@ class TopologyTest(unittest.TestCase):
             self.assertNotIn(fcmap.DIR8_SOUTHWEST, offered)
         self.assertIsNone(topo.step(500, fcmap.DIR8_NORTHEAST))
 
+    def test_every_offered_topology_is_sound(self):
+        """`fcgame.py --topology` lets the map be any of these four, so all
+        four have to round-trip and have reversible steps everywhere."""
+        for flags in (0, fcmap.TF_ISO, fcmap.TF_HEX,
+                      fcmap.TF_ISO | fcmap.TF_HEX):
+            topo = fcmap.Topology(24, 32, flags, fcmap.WRAP_X)
+            for index in range(topo.size()):
+                self.assertEqual(topo.map_to_index(*topo.index_to_map(index)),
+                                 index, flags)
+                for direction, neighbour in topo.neighbours(index):
+                    self.assertEqual(
+                        topo.step(neighbour, fcmap.DIR_REVERSE[direction]),
+                        index, (flags, index, direction))
+
+    def test_overhead_hex_drops_the_other_diagonal(self):
+        """Plain hex lacks NW/SE; iso-hex lacks NE/SW. Freeciv counts a hex
+        map as isometric for *coordinates* even without the ISO flag, so
+        picking the diagonal off `is_isometric` gets plain hex backwards --
+        and a direction the server rejects loses the whole orders packet."""
+        topo = fcmap.Topology(24, 32, fcmap.TF_HEX, fcmap.WRAP_X)
+        self.assertTrue(topo.is_isometric)      # for coordinates
+        self.assertFalse(topo.has_iso_flag)     # but the flag is not set
+        self.assertEqual(topo.valid_directions(), (1, 2, 3, 4, 5, 6))
+        self.assertNotIn(fcmap.DIR8_NORTHWEST, topo.valid_directions())
+        self.assertNotIn(fcmap.DIR8_SOUTHEAST, topo.valid_directions())
+
+    def test_plain_hex_distance_misses_the_nw_se_diagonal(self):
+        """The pair real_distance() charges full price for is the pair the
+        topology cannot step along, so it flips with the ISO flag too."""
+        hexo = fcmap.Topology(24, 32, fcmap.TF_HEX, fcmap.WRAP_X)
+        centre = hexo.native_to_index(10, 10)
+        for direction in (fcmap.DIR8_NORTHEAST, fcmap.DIR8_SOUTHWEST):
+            step = hexo.step(centre, direction)
+            self.assertIsNotNone(step)
+            self.assertEqual(hexo.real_distance(centre, step), 1)
+
     def test_hex_distance_has_no_missing_diagonal(self):
         square = fcmap.Topology(36, 48, fcmap.TF_ISO, fcmap.WRAP_X)
         hexo = fcmap.Topology(36, 48, fcmap.TF_ISO | fcmap.TF_HEX,

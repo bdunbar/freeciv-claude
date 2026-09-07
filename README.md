@@ -23,6 +23,24 @@ command. In another terminal:
 
 Pick a nation, click **Ready**, and the game begins.
 
+## Map shape
+
+Freeciv 3.2 defaults to iso-hex — hexagonal tiles. `fcgame.py host` defaults
+to `--topology square` instead, because that is the style this game gets
+played in. All four are available:
+
+    --topology square    overhead squares, the "classic" look (default here)
+    --topology iso       the same square tiles, drawn as diamonds
+    --topology hex       hexagons, overhead
+    --topology iso-hex   hexagons, isometric — freeciv 3.2's own default
+
+Your GTK client picks a tileset to match whichever the server is running, so
+nothing needs setting on your side. The seat handles all four: hex maps drop
+one diagonal from the eight directions — plain hex has no NW/SE, iso-hex no
+NE/SW — and sending a dropped direction gets the whole orders packet
+rejected, so `fcmap.py` works that out from the topology rather than
+assuming.
+
 ## Who is playing
 
 Two modes, and the difference matters:

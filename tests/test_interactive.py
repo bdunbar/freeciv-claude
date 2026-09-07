@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fcbot import fcmap, observe, orders, state
+from fcbot import fcmap, observe, orders, server, state
 from fcbot.interactive import InteractiveAgent
 
 
@@ -678,6 +678,32 @@ class MapWindowTest(unittest.TestCase):
         # A header and one row holding the single known tile.
         self.assertEqual(len(overview), 2)
         self.assertEqual(overview[1].split()[1], "gC")
+
+
+class TopologyChoiceTest(unittest.TestCase):
+    """`--topology` has to name values the 3.2 server's `set topology`
+    accepts; the empty one is what makes a map plain squares."""
+
+    def test_the_four_shapes_map_to_the_server_setting(self):
+        self.assertEqual(server.TOPOLOGIES["square"], "")
+        self.assertEqual(server.TOPOLOGIES["iso"], "ISO")
+        self.assertEqual(server.TOPOLOGIES["hex"], "Hex")
+        self.assertEqual(server.TOPOLOGIES["iso-hex"], "ISO|Hex")
+
+    def test_an_unknown_topology_is_refused_before_the_server_sees_it(self):
+        srv = server.Server.__new__(server.Server)
+        srv.command = lambda cmd: True
+        srv.ruleset = "classic"
+        with self.assertRaises(ValueError):
+            srv.configure(topology="octagon")
+
+    def test_the_empty_value_is_quoted(self):
+        sent = []
+        srv = server.Server.__new__(server.Server)
+        srv.command = lambda cmd: sent.append(cmd)
+        srv.ruleset = "classic"
+        srv.configure(topology="square")
+        self.assertIn('set topology ""', sent)
 
 
 class InteractiveFileTest(unittest.TestCase):

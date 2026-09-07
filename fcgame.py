@@ -29,7 +29,7 @@ import time
 from fcbot.agent import Agent, Strategy
 from fcbot.client import Client
 from fcbot.interactive import InteractiveAgent
-from fcbot.server import Server
+from fcbot.server import Server, TOPOLOGIES
 from fcbot import observe, state
 
 STRIP_MARKUP = re.compile(r"\[/?c[^\]]*\]")
@@ -73,8 +73,9 @@ def cmd_host(args):
     srv.start()
     srv.configure(ai_players=args.ai, skill=args.skill,
                   mapsize=args.map_size, seed=args.seed,
-                  timeout=args.timeout)
-    log("ruleset=%s  ai_players=%d (%s)" % (args.ruleset, args.ai, args.skill))
+                  timeout=args.timeout, topology=args.topology)
+    log("ruleset=%s  ai_players=%d (%s)  topology=%s"
+        % (args.ruleset, args.ai, args.skill, args.topology))
 
     # The name on the wire should say who is actually deciding: the model
     # in interactive mode, the scripted agent in auto mode.
@@ -262,6 +263,12 @@ def main(argv=None):
     host.add_argument("--map-size", type=int, default=None,
                       help="map size in thousands of tiles")
     host.add_argument("--seed", type=int, default=None)
+    host.add_argument("--topology", default="square",
+                      choices=sorted(TOPOLOGIES),
+                      help="tile shape: square (overhead squares, the "
+                           "default here), iso (the same squares drawn as "
+                           "diamonds), hex, or iso-hex (freeciv's own "
+                           "default). Your client picks a matching tileset.")
     host.add_argument("--nation", default="Roman",
                       help="nation for Claude to play")
     host.add_argument("--leader", default="Claudius")

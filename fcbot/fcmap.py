@@ -45,7 +45,21 @@ class Topology(object):
 
     @property
     def is_isometric(self):
+        """Whether native and map coordinates differ (MAP_IS_ISOMETRIC).
+
+        Freeciv counts a *hex* map as isometric for coordinates even when
+        the ISO flag is not set, so this is deliberately `ISO | HEX`. Which
+        directions are legal moves is a different question and turns on the
+        ISO flag alone -- see `has_iso_flag`.
+        """
         return bool(self.topology_id & (TF_ISO | TF_HEX))
+
+    @property
+    def has_iso_flag(self):
+        """The TF_ISO flag itself. On hex maps this picks which diagonal is
+        missing, and getting it backwards sends units in a direction the
+        server rejects (common/map.c is_valid_dir_calculate)."""
+        return bool(self.topology_id & TF_ISO)
 
     @property
     def wrap_x(self):
@@ -68,7 +82,7 @@ class Topology(object):
         """
         if not self.is_hex:
             return tuple(range(DIR8_COUNT))
-        dropped = ((DIR8_NORTHEAST, DIR8_SOUTHWEST) if self.is_isometric
+        dropped = ((DIR8_NORTHEAST, DIR8_SOUTHWEST) if self.has_iso_flag
                    else (DIR8_SOUTHEAST, DIR8_NORTHWEST))
         return tuple(d for d in range(DIR8_COUNT) if d not in dropped)
 
@@ -78,7 +92,7 @@ class Topology(object):
         if len(self.valid_directions()) == DIR8_COUNT:
             return "all eight directions are moves: " + names
         return ("this map is %s, so only these are moves: %s" %
-                ("iso-hex" if self.is_isometric else "hex", names))
+                ("iso-hex" if self.has_iso_flag else "hex", names))
 
     def size(self):
         return self.xsize * self.ysize
@@ -182,7 +196,7 @@ class Topology(object):
         """
         dx, dy = self._map_delta(src, dst)
         if self.is_hex:
-            if self.is_isometric:
+            if self.has_iso_flag:
                 no_diagonal = (dx < 0 < dy) or (dy < 0 < dx)
             else:
                 no_diagonal = (dx > 0 and dy > 0) or (dx < 0 and dy < 0)

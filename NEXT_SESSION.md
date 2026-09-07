@@ -145,6 +145,18 @@ the orders schema exposes neither.
 * ~~`fcgame.py` prints `research: goal -> goal set to X`~~ -- fixed
   2026-09-07.
 
+## Map shape (2026-09-07)
+
+Brian prefers non-hex maps, so `fcgame.py host --topology` picks between
+`square` (the new default), `iso`, `hex` and `iso-hex` (freeciv's own
+default). Building it turned up a real bug: `Topology.is_isometric` is
+`ISO | HEX`, because freeciv counts a hex map as isometric for *coordinate*
+purposes — but which diagonal a hex map drops turns on the ISO flag alone.
+Plain hex was therefore getting iso-hex's directions, which would have had
+the server reject every orders packet aimed along them. `has_iso_flag` is
+now separate from `is_isometric`, and single steps in every legal direction
+were checked live on all three shapes.
+
 ## Where things stand (2026-09-07)
 
 Everything the first game turned up is fixed and, where it touches the wire,

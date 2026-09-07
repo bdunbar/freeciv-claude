@@ -52,6 +52,18 @@ def default_command(savedir):
         % (FLATPAK_APP, FLATPAK_APP, REQUIRED_VERSION[0], REQUIRED_VERSION[1]))
 
 
+#: `set topology` is a bitwise setting; these are the four shapes a map can
+#: have. Freeciv 3.2's own default is iso-hex, which is the odd one out --
+#: the other three are square tiles, differing only in how they are drawn.
+#: The human's client picks a matching tileset for whichever is set.
+TOPOLOGIES = {
+    "square": "",                # overhead squares, the "classic" look
+    "iso": "ISO",                # the same squares, drawn as diamonds
+    "hex": "Hex",
+    "iso-hex": "ISO|Hex",        # freeciv 3.2's default
+}
+
+
 class Server(object):
     def __init__(self, port=5556, savedir=None, ruleset="classic",
                  binary=None, log_path=None):
@@ -141,7 +153,7 @@ class Server(object):
         return True
 
     def configure(self, ai_players=3, skill="normal", mapsize=None,
-                  seed=None, settings=None, timeout=0):
+                  seed=None, settings=None, timeout=0, topology=None):
         """Set up the game before anyone joins.
 
         ai_players counts only the computer players; the two human seats
@@ -154,6 +166,14 @@ class Server(object):
             self.command(skill)
         self.command("set aifill %d" % (ai_players + 2))
         self.command("set timeout %d" % timeout)
+        if topology is not None:
+            if topology not in TOPOLOGIES:
+                raise ValueError("topology must be one of %s, got %r"
+                                 % (", ".join(sorted(TOPOLOGIES)), topology))
+            value = TOPOLOGIES[topology]
+            # An empty bitwise value has to be quoted or the console reads
+            # the line as a query rather than an assignment.
+            self.command('set topology "%s"' % value)
         if mapsize is not None:
             self.command("set size %d" % mapsize)
         if seed is not None:
