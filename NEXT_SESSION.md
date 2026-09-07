@@ -142,8 +142,17 @@ the orders schema exposes neither.
 * Auto mode still never wages war and has no diplomacy. The packets and
   the `Client` methods exist now, so an auto-mode policy is the only
   missing piece.
-* `fcgame.py` prints `research: goal -> goal set to X` -- the word "goal"
-  twice. Cosmetic, in `agent.py` `manage_research` plus its caller.
+* ~~`fcgame.py` prints `research: goal -> goal set to X`~~ -- fixed
+  2026-09-07.
+
+## Where things stand (2026-09-07)
+
+Everything the first game turned up is fixed and, where it touches the wire,
+checked against a live 3.2.5 server. What is left is the list above:
+resuming mid-game, a per-turn diff, and an auto-mode diplomacy policy --
+none of them things the first game actually tripped over. The next real
+information probably comes from playing another game rather than from
+building more.
 
 ## What exists and works
 
