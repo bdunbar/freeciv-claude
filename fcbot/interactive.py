@@ -19,6 +19,7 @@ the game outlives the session that started it.
 import importlib
 import json
 import os
+import shutil
 import time
 
 from . import observe, orders
@@ -41,6 +42,34 @@ class InteractiveAgent(object):
         self.reload_each_turn = reload_each_turn
         self.last_message_mark = 0
         os.makedirs(self.dir, exist_ok=True)
+        self.archive_previous_game()
+
+    def archive_previous_game(self):
+        """Move an earlier game's files out of the way before playing.
+
+        Turn numbers restart with every game, so a turns directory left over
+        from a previous one already holds an orders file for every turn we
+        are about to ask about -- and `wait_for_orders` would take each of
+        them the instant it wrote the observation. That is not theoretical:
+        one game replayed two-day-old orders, chat included, against units
+        that no longer existed, at about a turn a second, and never founded
+        a city. The old files are kept, not deleted; they are a record of a
+        game that was played.
+        """
+        leftovers = [n for n in os.listdir(self.dir)
+                     if n.endswith((".obs.json", ".obs.txt", ".orders.json",
+                                    ".result.json"))]
+        if not leftovers:
+            return None
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        archive = os.path.join(self.dir, "previous-%s" % stamp)
+        os.makedirs(archive, exist_ok=True)
+        for name in leftovers:
+            shutil.move(os.path.join(self.dir, name),
+                        os.path.join(archive, name))
+        self.log("moved %d file(s) from an earlier game into %s"
+                 % (len(leftovers), archive))
+        return archive
 
     # -- paths ---------------------------------------------------------
     def path(self, turn, suffix):

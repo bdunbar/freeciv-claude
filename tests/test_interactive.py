@@ -735,6 +735,34 @@ class InteractiveFileTest(unittest.TestCase):
         results = self.agent.play_turn(deadline=0)
         self.assertEqual(results, [])
 
+    def test_an_earlier_game_in_the_directory_is_moved_aside(self):
+        """Turn numbers restart every game, so leftovers would be taken as
+        this turn's orders the instant the observation was written -- which
+        is exactly how one game replayed two-day-old orders."""
+        for name in ("0001.obs.json", "0001.orders.json", "0001.result.json",
+                     "0002.obs.txt"):
+            with open(os.path.join(self.dir, name), "w") as fp:
+                fp.write("[]")
+        agent = InteractiveAgent(self.client, self.dir, poll_seconds=0.01)
+        self.assertFalse(os.path.exists(
+            os.path.join(self.dir, "0001.orders.json")))
+        archives = [n for n in os.listdir(self.dir)
+                    if n.startswith("previous-")]
+        self.assertEqual(len(archives), 1)
+        # kept, not deleted: they are the record of a game that was played
+        self.assertEqual(sorted(os.listdir(os.path.join(self.dir,
+                                                        archives[0]))),
+                         ["0001.obs.json", "0001.orders.json",
+                          "0001.result.json", "0002.obs.txt"])
+        self.assertIsNone(agent.archive_previous_game())
+
+    def test_a_stale_orders_file_is_not_taken_as_this_turn_s(self):
+        with open(os.path.join(self.dir, "0007.orders.json"), "w") as fp:
+            json.dump([{"chat": "from a game two days ago"}], fp)
+        agent = InteractiveAgent(self.client, self.dir, poll_seconds=0.01)
+        self.assertEqual(agent.play_turn(deadline=0), [])
+        self.assertEqual(self.client.calls, [])
+
     def test_the_seat_can_be_retuned_while_the_game_runs(self):
         """Restarting the host would drop us out of the game, so observe.py
         and orders.py are re-imported each turn instead."""
