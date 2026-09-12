@@ -241,8 +241,18 @@ def _meta(game):
         "leader": me.get("name"),
         "score": me.get("score"),
         # Reversal of tile rankings, so it belongs where it will be read.
-        "tile_output_penalty": game.output_penalty_threshold(),
+        # getattr, not a plain call: observe.py is re-imported every turn
+        # but state.py is not, so a fresh observe can find itself talking to
+        # an older GameState. Crashing here drops the seat out of the game.
+        "tile_output_penalty": _penalty(game),
     }
+
+
+def _penalty(game):
+    """The government's tile-output penalty, if this GameState knows about
+    it. An older one, loaded before the feature existed, does not."""
+    getter = getattr(game, "output_penalty_threshold", None)
+    return getter() if getter else None
 
 
 def _research(game, agent_techs=None):

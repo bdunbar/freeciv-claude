@@ -235,6 +235,38 @@ def _await(predicate, timeout, poll=0.5):
         time.sleep(poll)
 
 
+def cmd_rejoin(args):
+    """Reconnect the seat to a server that is already running.
+
+    `host` owns its server and dies with it; if the host process falls over
+    -- a bad reload, an unhandled packet -- the game itself is still there,
+    with our player sitting disconnected. Starting a new host would start a
+    new server. This puts the seat back in the chair it was in.
+    """
+    client = Client(host=args.host, port=args.port, username=args.username,
+                    log=log)
+    log("reconnecting to %s:%d as %s ..." % (args.host, args.port,
+                                             args.username))
+    client.login()
+    deadline = time.time() + 60
+    while client.game.player_no is None and time.time() < deadline:
+        client.pump(1.0)
+    if client.game.player_no is None:
+        log("connected, but the server gave us no player slot")
+        return 1
+    me = client.game.me or {}
+    log("back in as %s (player %s), turn %d"
+        % (me.get("name", "?"), client.game.player_no, client.game.turn))
+
+    agent = InteractiveAgent(client, args.turns_dir, log=log)
+    while not client._game_over:
+        client.pump(1.0)
+        if client._phase_started:
+            agent.play_turn()
+            client.end_phase()
+    return 0
+
+
 def cmd_play(args):
     """Submit one turn's orders and print the next observation.
 
@@ -401,6 +433,14 @@ def main(argv=None):
     host.add_argument("--stall-timeout", type=int, default=600)
     host.add_argument("--save-on-exit", default=None)
     host.set_defaults(func=cmd_host)
+
+    rejoin = sub.add_parser(
+        "rejoin", help="reconnect the seat to a server already running")
+    rejoin.add_argument("--host", default="localhost")
+    rejoin.add_argument("--port", type=int, default=5556)
+    rejoin.add_argument("--username", default="claude")
+    rejoin.add_argument("--turns-dir", default=os.path.join("games", "turns"))
+    rejoin.set_defaults(func=cmd_rejoin)
 
     play = sub.add_parser(
         "play", help="submit one turn's orders and print the next observation")
