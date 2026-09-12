@@ -77,6 +77,44 @@ lines of if-statements -- it does not wage war, has no diplomacy, and is a
 weak opponent. It logs in as `fcbot` rather than `claude` precisely so a
 game against the script is never mistaken for a game against the model.
 
+### Standing orders
+
+Playing one turn per wakeup spends nearly every wakeup confirming that
+nothing happened. Instead the seat can be given a **policy** -- what to
+research, what each city builds, what units of each kind are for -- and it
+plays forward under that until something the policy does not cover happens.
+Then it stops and writes `NNNN.wake.json` saying why.
+
+A policy arrives through the ordinary orders channel, so one answer can
+both play this turn and set what happens after it:
+
+```json
+[
+  {"unit": 112, "activity": "fortify"},
+  {"policy": {
+     "research": ["Ceremonial Burial", "Alphabet", "Code of Laws", "Monarchy"],
+     "government": "Monarchy",
+     "cities": {"default": {"build": [["unit", "Warriors"],
+                                      ["unit", "Settlers"]],
+                            "tiles": "food"}},
+     "units": {"Explorer": "explore", "Workers": "auto_worker",
+               "Settlers": "hold", "*": "fortify"},
+     "wake_on": {"enemy_within": 4, "every_n_turns": 10}
+  }}
+]
+```
+
+It is **conservative on purpose**: it carries out what the policy says and
+stops for everything else. A unit of a type the policy never mentions, a
+city with no build rule, an exhausted research plan, a treaty waiting on us,
+first contact with anyone, disorder, famine, a hostile unit inside
+`enemy_within` tiles, a city lost -- each of those stops it, and when it
+stops it sends *nothing*, because a half-played turn is worse than either.
+
+The strategy is the model's and the execution is a rules engine. That line
+matters: `fcbot/policy.py` decides nothing the policy did not already say,
+and where it would have to, it raises an interrupt instead.
+
 ### Playing a turn
 
 The observation/orders files are a good way for two processes to hand a game
@@ -214,7 +252,8 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/client.py` | player actions: orders, production, research, rates, treaties |
 | `fcbot/observe.py` | what we can see, shaped to be read (including the map) |
 | `fcbot/orders.py` | JSON orders resolved to real actions |
-| `fcbot/interactive.py` | the turn loop that waits for the model |
+| `fcbot/policy.py` | standing orders, and the exceptions that stop them |
+| `fcbot/interactive.py` | the turn loop: autoplay under policy, or wait for the model |
 | `fcbot/agent.py` | the scripted fallback agent (`--mode auto`) |
 | `fcbot/server.py` | launches and drives `freeciv-server` |
 | `PLAYBOOK.md` | what playing the game has taught, kept between sessions |

@@ -8,6 +8,14 @@ answer is no, it does not belong here. If the answer is yes, the better fix
 is usually to put it in the observation where it cannot be missed -- and
 then record here that it is there.
 
+## Standing orders
+
+Set a policy on turn 1 rather than playing turn-by-turn. Cover every unit
+type you own or autoplay stops on it -- that is deliberate, but it means a
+policy missing `Workers` will halt the moment one is built. Re-issue the
+policy whenever the shape of the game changes: a new unit type, a new city
+that wants a different build rule, a war.
+
 ## Rules that reverse a decision
 
 * **The government tile penalty.** Under Despotism (classic ruleset), a tile

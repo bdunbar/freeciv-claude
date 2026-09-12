@@ -22,14 +22,15 @@ import os
 import shutil
 import time
 
-from . import observe, orders
+from . import observe, orders, policy as policy_mod
 
 POLL_SECONDS = 2.0
 
 
 class InteractiveAgent(object):
     def __init__(self, client, turns_dir, log=None, on_turn=None,
-                 poll_seconds=POLL_SECONDS, reload_each_turn=True):
+                 poll_seconds=POLL_SECONDS, reload_each_turn=True,
+                 policy=None):
         self.client = client
         self.game = client.game
         self.dir = turns_dir
@@ -40,6 +41,11 @@ class InteractiveAgent(object):
         #: re-import observe.py and orders.py each turn, so the seat can be
         #: tuned while the game is running
         self.reload_each_turn = reload_each_turn
+        #: standing orders; while these are set, turns the policy covers are
+        #: played without waking anyone
+        self.policy = policy
+        self.memory = {}
+        self.last_decision_turn = 0
         self.last_message_mark = 0
         os.makedirs(self.dir, exist_ok=True)
         self.archive_previous_game()
@@ -125,11 +131,67 @@ class InteractiveAgent(object):
                 self.log("could not reload %s, keeping the loaded one: %s"
                          % (module.__name__, exc))
 
+    # -- autoplay ------------------------------------------------------
+    def set_policy(self, data):
+        """Adopt standing orders. `None` goes back to deciding every turn."""
+        self.policy = policy_mod.Policy(data) if data is not None else None
+        self.memory = {}
+        return self.policy
+
+    def autoplay_turn(self):
+        """Play this turn under the policy, or stop and say why.
+
+        Returns (played, interrupts): `played` is False when the turn needs
+        a decision, in which case nothing has been sent.
+        """
+        if self.policy is None:
+            return False, [policy_mod.Interrupt("no_policy",
+                                                "no standing orders set")]
+        memory = dict(self.memory)
+        memory["last_decision_turn"] = self.last_decision_turn
+        interrupts = policy_mod.check_interrupts(self.game, self.policy,
+                                                 memory)
+        if interrupts:
+            return False, interrupts
+        plan, notes = policy_mod.plan_turn(self.game, self.policy)
+        if plan:
+            for line in orders.apply_orders(self.client, plan):
+                self.log("  [policy] %s" % line)
+        for note in notes:
+            self.log("  [policy] %s" % note)
+        self.memory = policy_mod.remember(self.game)
+        return True, []
+
+    def write_wake_report(self, turn, interrupts):
+        """Why autoplay stopped, next to the observation that explains it."""
+        report = {
+            "turn": turn,
+            "why": [i.as_dict() for i in interrupts],
+            "turns_played_under_policy": turn - self.last_decision_turn,
+            "note": ("Autoplay stopped here. Answer with orders as usual; "
+                     "include a 'policy' order to change the standing "
+                     "orders it resumes under."),
+        }
+        _write_json(self.path(turn, "wake"), report)
+        return report
+
     def play_turn(self, deadline=None):
         if self.reload_each_turn:
             self.reload_modules()
         turn = self.game.turn
+        if self.policy is not None:
+            played, interrupts = self.autoplay_turn()
+            if played:
+                self.log("turn %d: played under the policy" % turn)
+                self.client.pump(0.5)
+                return ["played under the policy"]
+            self.log("turn %d: %s" %
+                     (turn, "; ".join(i.detail for i in interrupts)))
+        else:
+            interrupts = []
         path, _obs = self.write_observation(turn)
+        if interrupts:
+            self.write_wake_report(turn, interrupts)
         self.log("turn %d: waiting for orders -- observation in %s" %
                  (turn, path))
         if self.on_turn:
@@ -140,6 +202,11 @@ class InteractiveAgent(object):
             self.log("turn %d: no orders; ending the phase unchanged" % turn)
             return []
 
+        order_list, new_policy = _split_policy(order_list)
+        if new_policy is not None:
+            self.set_policy(new_policy)
+            self.log("  adopted new standing orders")
+        self.last_decision_turn = turn
         results = orders.apply_orders(self.client, order_list)
         for line in results:
             self.log("  %s" % line)
@@ -204,6 +271,23 @@ HOW_TO_ANSWER = (
     "applied in order and each one's outcome is reported back."
     " " + HOW_CITIES_WORK + " " + HOW_DIPLOMACY_WORKS
 )
+
+
+def _split_policy(order_list):
+    """Pull a {"policy": {...}} entry out of an orders list.
+
+    Standing orders arrive by the same channel as everything else, so one
+    answer can both play this turn and change what happens after it.
+    """
+    if not isinstance(order_list, list):
+        return order_list, None
+    rest, found = [], None
+    for order in order_list:
+        if isinstance(order, dict) and "policy" in order and len(order) == 1:
+            found = order["policy"]
+        else:
+            rest.append(order)
+    return rest, found
 
 
 def _write_json(path, payload):
