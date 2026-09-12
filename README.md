@@ -23,6 +23,13 @@ command. In another terminal:
 
 Pick a nation, click **Ready**, and the game begins.
 
+## Playing it
+
+`PLAYBOOK.md` is what has been learned by playing: rules that reverse a
+decision, how the AIs actually behave in negotiation, what a good opening
+looks like. Read it before a game. It exists because the alternative is
+rediscovering the same things every session, at a turn or two each.
+
 ## Map shape
 
 Freeciv 3.2 defaults to iso-hex — hexagonal tiles. `fcgame.py host` defaults
@@ -210,6 +217,7 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/interactive.py` | the turn loop that waits for the model |
 | `fcbot/agent.py` | the scripted fallback agent (`--mode auto`) |
 | `fcbot/server.py` | launches and drives `freeciv-server` |
+| `PLAYBOOK.md` | what playing the game has taught, kept between sessions |
 | `legacy/` | an earlier savegame-editing approach, superseded |
 | `preserve-2.6.6/` | the old 2.6.6 debs, kept only as a historical reference |
 

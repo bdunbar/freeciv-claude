@@ -70,9 +70,13 @@ SSA_NONE = 0
 SSA_AUTOSETTLER = 1
 SSA_AUTOEXPLORE = 2
 
-# universals_n kinds used by city production
+# universals_n kinds used by city production and by requirements
+VUT_GOVERNMENT = 2
 VUT_IMPROVEMENT = 3
 VUT_UTYPE = 6
+
+#: enum effect_type. Only the ones we actually read are named.
+EFT_OUTPUT_PENALTY_TILE = 73
 
 # enum diplstate_type (common/player.h)
 DIPLSTATE_NAMES = {
@@ -131,6 +135,7 @@ class Ruleset(object):
         self.extras = {}
         self.resources = {}
         self.specialists = {}
+        self.effects = []
         self.control = {}
         self.terrain_control = {}
         self.game = {}
@@ -330,12 +335,58 @@ class GameState(object):
         return sorted(i for i, t in self.tiles.items()
                       if t.get("worked") == city_id)
 
-    def tile_output(self, index):
-        """Base food/shield/trade of a tile: terrain plus any resource.
+    def output_penalty_threshold(self):
+        """Under Despotism and its like, a tile producing more than N of any
+        output loses one of it (EFT_OUTPUT_PENALTY_TILE). Returns N, or None
+        where no such penalty is in force.
 
-        This is the ruleset's flat figure. What a city actually collects
-        also depends on extras, government penalties and effects, so treat
-        it as the ordering, not the number.
+        This is not a detail: it reverses the ranking of tiles. A 3-food
+        special is worth 2 food under Despotism, which makes it *worse* than
+        an ordinary 2-food tile that also yields a shield.
+        """
+        me = self.me
+        if me is None:
+            return None
+        government = me.get("government")
+        best = None
+        for effect in self.ruleset.effects:
+            if effect.get("effect_type") != EFT_OUTPUT_PENALTY_TILE:
+                continue
+            if not self._reqs_hold_for_government(effect, government):
+                continue
+            value = effect.get("effect_value")
+            if value is not None and (best is None or value < best):
+                best = value
+        return best
+
+    @staticmethod
+    def _reqs_hold_for_government(effect, government):
+        """Whether an effect's requirements are met, as far as we evaluate
+        them: we read the government requirement and ignore the rest, so an
+        effect gated on anything else is treated as not applying."""
+        for req in (effect.get("reqs") or [])[:effect.get("reqs_count", 0)]:
+            if req.get("type") != VUT_GOVERNMENT:
+                return False
+            if req.get("present", True) != (req.get("value") == government):
+                return False
+        return True
+
+    def apply_output_penalty(self, output):
+        """Knock one off any output over the threshold, in place."""
+        threshold = self.output_penalty_threshold()
+        if threshold is None:
+            return output
+        for key, value in output.items():
+            if value > threshold:
+                output[key] = value - 1
+        return output
+
+    def tile_output(self, index):
+        """Base food/shield/trade of a tile: terrain plus any resource, with
+        the government's tile penalty applied.
+
+        Still not the whole story -- roads, irrigation and other extras add
+        to it -- but the penalty is in, which is what decides the ranking.
         """
         tile = self.tiles.get(index)
         if tile is None or tile.get("known") == TILE_UNKNOWN:
@@ -348,7 +399,8 @@ class GameState(object):
         if resource:
             for i, extra in enumerate((resource.get("output") or [])[:3]):
                 out[i] += extra
-        return {"food": out[0], "shield": out[1], "trade": out[2]}
+        return self.apply_output_penalty(
+            {"food": out[0], "shield": out[1], "trade": out[2]})
 
     @property
     def move_fragments(self):
@@ -580,6 +632,10 @@ def _h_terrain_control(s, v):
     s.ruleset.terrain_control = v
 
 
+def _h_ruleset_effect(s, v):
+    s.ruleset.effects.append(v)
+
+
 def _h_diplstate(s, v):
     s.diplstates[(v["plr1"], v["plr2"])] = v
 
@@ -622,6 +678,7 @@ def _h_accept_treaty(s, v):
 _HANDLERS["PACKET_RULESET_CONTROL"] = _h_ruleset_control
 _HANDLERS["PACKET_RULESET_GAME"] = _h_ruleset_game
 _HANDLERS["PACKET_RULESET_TERRAIN_CONTROL"] = _h_terrain_control
+_HANDLERS["PACKET_RULESET_EFFECT"] = _h_ruleset_effect
 _HANDLERS["PACKET_PLAYER_DIPLSTATE"] = _h_diplstate
 _HANDLERS["PACKET_DIPLOMACY_INIT_MEETING"] = _h_init_meeting
 _HANDLERS["PACKET_DIPLOMACY_CANCEL_MEETING"] = _h_cancel_meeting

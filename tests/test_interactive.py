@@ -568,6 +568,52 @@ class CityDetailTest(unittest.TestCase):
         self.assertEqual(self.city["specialists"], {"Entertainers": 1})
 
 
+class GovernmentTilePenaltyTest(unittest.TestCase):
+    """Despotism knocks one off any tile output above 2, which *reverses*
+    the ranking: a 3-food special becomes worth less than an ordinary 2-food
+    tile that also yields a shield. Learned by making exactly that swap in a
+    live game and losing a shield for nothing."""
+
+    def setUp(self):
+        self.game = build_game()
+        self.game.players[0]["government"] = 1          # Despotism
+        self.game.ruleset.effects = [{
+            "effect_type": state.EFT_OUTPUT_PENALTY_TILE,
+            "effect_value": 2, "reqs_count": 1,
+            "reqs": [{"type": state.VUT_GOVERNMENT, "value": 1,
+                      "present": True}],
+        }]
+
+    def test_the_threshold_is_read_from_the_ruleset(self):
+        self.assertEqual(self.game.output_penalty_threshold(), 2)
+
+    def test_a_three_food_special_is_really_worth_two(self):
+        self.game.tiles[39]["resource"] = 40            # wheat: +2 food
+        # grassland 2 + wheat 2 = 4, penalised to 3... and 3 > 2, so 3 again
+        self.assertEqual(self.game.tile_output(39)["food"], 3)
+        self.game.ruleset.terrains[0]["output"] = [3, 0, 0, 0, 0, 0]
+        self.game.tiles[50]["resource"] = state.NO_RESOURCE
+        self.assertEqual(self.game.tile_output(50)["food"], 2)
+
+    def test_no_penalty_under_a_government_without_one(self):
+        self.game.players[0]["government"] = 2          # Monarchy
+        self.assertIsNone(self.game.output_penalty_threshold())
+        self.game.ruleset.terrains[0]["output"] = [3, 0, 0, 0, 0, 0]
+        self.assertEqual(self.game.tile_output(50)["food"], 3)
+
+    def test_an_effect_gated_on_something_we_cannot_read_is_ignored(self):
+        """Better to miss a penalty than to invent one."""
+        self.game.ruleset.effects[0]["reqs"] = [
+            {"type": 99, "value": 1, "present": True}]
+        self.assertIsNone(self.game.output_penalty_threshold())
+
+    def test_the_penalty_is_stated_where_it_will_be_read(self):
+        obs = observe.observation(self.game)
+        self.assertEqual(obs["meta"]["tile_output_penalty"], 2)
+        self.assertIn("penalty: a tile yielding more than 2",
+                      observe.to_text(obs))
+
+
 class CityTileOrderTest(unittest.TestCase):
     def setUp(self):
         self.game = build_game()

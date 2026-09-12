@@ -240,6 +240,8 @@ def _meta(game):
         "nation": _name(game.ruleset.nations, me.get("nation")),
         "leader": me.get("name"),
         "score": me.get("score"),
+        # Reversal of tile rankings, so it belongs where it will be read.
+        "tile_output_penalty": game.output_penalty_threshold(),
     }
 
 
@@ -675,6 +677,12 @@ def to_text(obs):
                (m["government"], m["gold"], m["rates"]["tax"],
                 m["rates"]["luxury"], m["rates"]["science"],
                 ", IN REVOLUTION" if m["in_revolution"] else ""))
+    penalty = m.get("tile_output_penalty")
+    if penalty is not None:
+        out.append("  ! %s penalty: a tile yielding more than %d of any "
+                   "output loses one of it. Tile figures below already "
+                   "include this, so a 3-food special really is worth %d."
+                   % (m["government"], penalty, penalty))
     r = obs.get("research")
     if r:
         out.append("  researching %s (%s/%s bulbs, +%s/turn), goal %s" %
