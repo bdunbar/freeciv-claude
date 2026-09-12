@@ -153,11 +153,17 @@ class Server(object):
         return True
 
     def configure(self, ai_players=3, skill="normal", mapsize=None,
-                  seed=None, settings=None, timeout=0, topology=None):
+                  seed=None, settings=None, timeout=0, topology=None,
+                  tiles_per_player=None):
         """Set up the game before anyone joins.
 
         ai_players counts only the computer players; the two human seats
         (yours and the bot's) are added on top via aifill.
+
+        `mapsize` is the whole map in thousands of tiles (the server caps it
+        at 2048, i.e. two million tiles); `tiles_per_player` sizes the map
+        from the number of players instead, which is the server's own
+        default at 100. Pass one or the other, not both.
         """
         self.command("set ruleset %s" % self.ruleset)
         if skill:
@@ -175,7 +181,15 @@ class Server(object):
             # the line as a query rather than an assignment.
             self.command('set topology "%s"' % value)
         if mapsize is not None:
+            # `size` is only consulted when `mapsize` says to use it. The
+            # 3.2 server ships with mapsize=PLAYER, which sizes the map from
+            # `tilesperplayer` instead and silently ignores `size` -- so
+            # setting `size` alone does nothing at all.
+            self.command("set mapsize FULLSIZE")
             self.command("set size %d" % mapsize)
+        if tiles_per_player is not None:
+            self.command("set mapsize PLAYER")
+            self.command("set tilesperplayer %d" % tiles_per_player)
         if seed is not None:
             self.command("set mapseed %d" % seed)
             self.command("set gameseed %d" % seed)

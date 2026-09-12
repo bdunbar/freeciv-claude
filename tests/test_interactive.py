@@ -697,6 +697,29 @@ class TopologyChoiceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             srv.configure(topology="octagon")
 
+    def test_map_size_also_switches_the_server_to_using_it(self):
+        """`size` is ignored unless `mapsize` says FULLSIZE, and the 3.2
+        server ships with mapsize=PLAYER -- so setting size alone silently
+        does nothing, which is why every game came out 40x40."""
+        sent = []
+        srv = server.Server.__new__(server.Server)
+        srv.command = lambda cmd: sent.append(cmd)
+        srv.ruleset = "classic"
+        srv.configure(mapsize=150)
+        self.assertIn("set mapsize FULLSIZE", sent)
+        self.assertIn("set size 150", sent)
+        self.assertLess(sent.index("set mapsize FULLSIZE"),
+                        sent.index("set size 150"))
+
+    def test_tiles_per_player_switches_the_other_way(self):
+        sent = []
+        srv = server.Server.__new__(server.Server)
+        srv.command = lambda cmd: sent.append(cmd)
+        srv.ruleset = "classic"
+        srv.configure(tiles_per_player=400)
+        self.assertIn("set mapsize PLAYER", sent)
+        self.assertIn("set tilesperplayer 400", sent)
+
     def test_the_empty_value_is_quoted(self):
         sent = []
         srv = server.Server.__new__(server.Server)

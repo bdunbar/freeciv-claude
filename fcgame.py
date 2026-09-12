@@ -75,7 +75,8 @@ def cmd_host(args):
     srv.start()
     srv.configure(ai_players=args.ai, skill=args.skill,
                   mapsize=args.map_size, seed=args.seed,
-                  timeout=args.timeout, topology=args.topology)
+                  timeout=args.timeout, topology=args.topology,
+                  tiles_per_player=args.tiles_per_player)
     log("ruleset=%s  ai_players=%d (%s)  topology=%s"
         % (args.ruleset, args.ai, args.skill, args.topology))
 
@@ -359,8 +360,14 @@ def main(argv=None):
                       choices=["novice", "easy", "normal", "hard",
                                "cheating", "experimental"])
     host.add_argument("--ruleset", default="classic")
+    host.add_argument("--tiles-per-player", type=int, default=None,
+                      help="size the map from the player count instead "
+                           "(server default 100, max 1000). Mutually "
+                           "exclusive with --map-size.")
     host.add_argument("--map-size", type=int, default=None,
-                      help="map size in thousands of tiles")
+                      help="whole map in thousands of tiles (max 2048). The "
+                           "server ignores this unless mapsize is set to "
+                           "FULLSIZE, which --map-size now does for you.")
     host.add_argument("--seed", type=int, default=None)
     host.add_argument("--topology", default="square",
                       choices=sorted(TOPOLOGIES),
