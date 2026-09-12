@@ -23,6 +23,17 @@ then record here that it is there.
   *from* war. So if an AI offers a ceasefire and you would rather have
   peace, ask for peace -- you do not have to take the ceasefire first.
 
+## Research
+
+* **A goal does not redirect research already under way.** The server picks
+  something the moment the game starts -- Masonry, in one game -- and
+  `research_goal` only takes effect once that finishes. Set the *current*
+  tech too, on turn 1, or several turns go into a dead end. Check the first
+  observation: if `researching` is not on the path to `goal`, change it
+  while only a few bulbs are sunk.
+* Monarchy in the classic ruleset wants Ceremonial Burial and Code of Laws,
+  and Code of Laws wants Alphabet. Masonry is not on that path.
+
 ## Diplomacy
 
 * **Contact lapses.** Meeting someone gives ~20 turns of contact, and when
