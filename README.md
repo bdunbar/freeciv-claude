@@ -421,6 +421,8 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/agent.py` | the scripted fallback agent (`--mode auto`) |
 | `fcbot/server.py` | launches and drives `freeciv-server` |
 | `PLAYBOOK.md` | what playing the game has taught, kept between sessions |
+| `DESIGN-intermittent.md` | why an absent player needs a different client |
+| `DESIGN-agent-runner.md` | what the runner taught, for the next thing that isn't freeciv |
 | `legacy/` | an earlier savegame-editing approach, superseded |
 | `preserve-2.6.6/` | the old 2.6.6 debs, kept only as a historical reference |
 
