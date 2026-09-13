@@ -2,7 +2,8 @@
 """Host a game of freeciv that you play against Claude.
 
     ./fcgame.py host --ai 3 --skill hard      # start a game
-    echo '[...]' | ./fcgame.py play           # play one turn
+    echo '[...]' | ./fcgame.py play           # play one turn, by hand
+    ./fcgame.py run-agent --agent-command ... # wake a model for each turn
     ./fcgame.py status                        # look without touching
 
 Starts a freeciv server, connects a second client to it, then waits for you
@@ -32,7 +33,7 @@ from fcbot.agent import Agent, Strategy
 from fcbot.client import Client
 from fcbot.interactive import InteractiveAgent
 from fcbot.server import Server, TOPOLOGIES
-from fcbot import observe, state
+from fcbot import observe, runner, state
 
 STRIP_MARKUP = re.compile(r"\[/?c[^\]]*\]")
 
@@ -200,27 +201,9 @@ def play_loop(client, agent, srv, args):
     return 0
 
 
-def _turn_files(turns_dir):
-    """{turn number: True} for every observation written so far."""
-    turns = {}
-    for name in os.listdir(turns_dir):
-        match = re.match(r"(\d{4})\.obs\.json$", name)
-        if match:
-            turns[int(match.group(1))] = True
-    return turns
-
-
-def _pending_turn(turns_dir):
-    """The turn waiting on us: the newest observation with no orders yet."""
-    if not os.path.isdir(turns_dir):
-        return None
-    turns = _turn_files(turns_dir)
-    if not turns:
-        return None
-    latest = max(turns)
-    if os.path.exists(os.path.join(turns_dir, "%04d.orders.json" % latest)):
-        return None                 # already answered; the host is thinking
-    return latest
+#: "which turn is waiting on us" is asked by `play`, by `run-agent` and by
+#: the tests, and all three have to agree. It lives in runner.py.
+_pending_turn = runner.pending_turn
 
 
 def _await(predicate, timeout, poll=0.5):
@@ -327,6 +310,44 @@ def cmd_play(args):
     with open(next_obs) as fp:
         print(observe.to_text(json.load(fp)))
     return 0
+
+
+def cmd_run_agent(args):
+    """Stay awake so the model does not have to be.
+
+    `play` answers a turn from an invocation that already exists. Nothing
+    creates that invocation -- which is why turns have sat unplayed for
+    days. This waits for the observation, wakes one bounded agent for it,
+    checks what comes back, and goes back to waiting.
+
+    It decides nothing about the game. It decides when there is work.
+    """
+    turns_dir = args.turns_dir
+    if not os.path.isdir(turns_dir) and not args.dry_run:
+        os.makedirs(turns_dir, exist_ok=True)
+    strategy = args.strategy or os.path.join(turns_dir, "strategy.md")
+    journal = args.journal or os.path.join(turns_dir, "journal.md")
+    try:
+        command = runner.AgentCommand(args.agent_command, shell=args.shell,
+                                      stdin_mode=args.stdin)
+    except ValueError as exc:
+        log(str(exc))
+        return 2
+
+    engine = runner.TurnRunner(
+        turns_dir, command, strategy=strategy, journal=journal,
+        timeout=args.timeout, poll=args.poll, max_attempts=args.max_attempts,
+        retry_delay=args.retry_delay, keep_going=args.keep_going,
+        from_turn=args.from_turn, retry_failed=args.retry_failed,
+        wait_for_turn=args.wait, log=log)
+    if args.dry_run:
+        return engine.dry_run()
+    try:
+        return engine.run_forever(once=args.once)
+    except runner.RunnerBusy as exc:
+        log("another runner is already watching %s (%s). Two of them would "
+            "each wake an agent for the same turn." % (turns_dir, exc))
+        return 3
 
 
 def cmd_status(args):
@@ -453,6 +474,54 @@ def main(argv=None):
                       help="seconds to wait for a turn to be ready, and "
                            "again for the next observation")
     play.set_defaults(func=cmd_play)
+
+    run = sub.add_parser(
+        "run-agent",
+        help="wait for a turn and wake a fresh model invocation for it")
+    run.add_argument("--turns-dir", default=os.path.join("games", "turns"))
+    run.add_argument("--agent-command", required=True,
+                     help="how to start one invocation. Placeholders: "
+                          "{brief} {obs} {obs_text} {orders} {turn} "
+                          "{turns_dir} {strategy} {journal}. The same values "
+                          "arrive as FC_BRIEF, FC_OBS and so on, and the "
+                          "briefing is offered on stdin.")
+    run.add_argument("--shell", action="store_true",
+                     help="run the command through a shell, for pipes and "
+                          "redirection. Without it the command is split into "
+                          "arguments and run directly.")
+    run.add_argument("--stdin", default="brief", choices=["brief", "none"],
+                     help="what to feed the agent on stdin (default: the "
+                          "briefing)")
+    run.add_argument("--strategy", default=None,
+                     help="durable plan file (default: <turns-dir>/"
+                          "strategy.md, created if missing)")
+    run.add_argument("--journal", default=None,
+                     help="campaign journal (default: <turns-dir>/"
+                          "journal.md, created if missing)")
+    run.add_argument("--timeout", type=int, default=900,
+                     help="seconds one invocation may take before it is "
+                          "killed and the turn left pending")
+    run.add_argument("--poll", type=float, default=2.0,
+                     help="seconds between looks at the turns directory")
+    run.add_argument("--max-attempts", type=int, default=1,
+                     help="invocations per turn before giving up on it")
+    run.add_argument("--retry-delay", type=int, default=5)
+    run.add_argument("--once", action="store_true",
+                     help="play one turn and exit")
+    run.add_argument("--wait", type=int, default=0,
+                     help="with --once, seconds to wait for a turn to "
+                          "appear at all")
+    run.add_argument("--dry-run", action="store_true",
+                     help="show the command and the briefing for the "
+                          "pending turn, and run nothing")
+    run.add_argument("--keep-going", action="store_true",
+                     help="carry on after a turn the agent failed, instead "
+                          "of stopping so it can be looked at")
+    run.add_argument("--from-turn", type=int, default=None,
+                     help="ignore observations older than this turn")
+    run.add_argument("--retry-failed", action="store_true",
+                     help="try a turn an earlier runner gave up on")
+    run.set_defaults(func=cmd_run_agent)
 
     status = sub.add_parser(
         "status", help="print the latest observation as readable text")

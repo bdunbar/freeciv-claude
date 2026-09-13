@@ -17,7 +17,9 @@ isn't one.
 Three consequences, all of which have already cost us:
 
 1. **No wake signal.** Turns sat unplayed for days because nothing told
-   anyone it was our move.
+   anyone it was our move. *(Built, 2026-09-13: `fcbot/runner.py` and
+   `./fcgame.py run-agent` -- a process that stays awake and starts one
+   bounded invocation per turn. See the README.)*
 2. **Every wakeup reloads context.** The situation is re-read and
    re-reasoned from scratch each turn.
 3. **Plans live in the model's context, not in the system.** Strategy

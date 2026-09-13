@@ -1,5 +1,50 @@
 # Next session
 
+## Done (2026-09-13): the runner, so a turn wakes somebody
+
+`DESIGN-intermittent.md` named three consequences of the player being
+absent rather than slow. The first one -- **no wake signal** -- is now
+built. `fcbot/runner.py` plus `./fcgame.py run-agent`:
+
+    ./fcgame.py run-agent --agent-command 'claude -p --allowedTools Read Write Edit Glob'
+
+It waits on `games/turns`, and each time a turn comes up it starts **one
+fresh, bounded invocation** for it, hands it a briefing, and checks what
+came back. Verified end to end against the real `claude -p`: it read the
+briefing and `PLAYBOOK.md`, wrote valid orders, and left a journal entry,
+in 45s, with nobody watching.
+
+The two rules it will not bend:
+
+* it never writes orders of its own. A crash, a timeout, prose instead of
+  JSON -- each leaves the turn pending and says so. An empty orders list is
+  a real move and has to be chosen.
+* the agent writes `NNNN.orders.proposed.json`, which the host does not
+  poll. The runner validates it and the rename into `NNNN.orders.json` is
+  the single atomic act of submission.
+
+Also here: `flock` so two runners cannot both answer a turn; per-turn
+records (`NNNN.agent.json`, `NNNN.agent.log`, `runner.jsonl`); restart
+recovery that does *not* silently retry a turn an earlier run gave up on;
+`strategy.md` / `journal.md` as durable memory; and `archive_previous_game`
+extended to the per-turn files it was leaking (`.wake.json` among them).
+
+The protocol itself is unchanged, again deliberately.
+
+### What this leaves
+
+* **Consequence 2, every wakeup reloads context**, is only half answered.
+  The briefing makes a wakeup self-sufficient, but nothing summarises the
+  journal: it is carried by its tail and will eventually need pruning, by
+  the model or by a turn-N compaction step.
+* **Durable memory has no game boundary.** `strategy.md` and `journal.md`
+  survive a new game on purpose (a mid-game rejoin rebuilds the
+  `InteractiveAgent` and would otherwise archive them). The runner warns
+  when turn numbers go backwards; moving them aside is still manual.
+* Nobody has played a whole game this way yet. The obvious next thing is to
+  run one and see what the briefing turns out to be missing -- the same way
+  the first game found the gaps in the observation.
+
 ## Done (2026-09-05): interactive mode
 
 Brian wanted **full turn-by-turn play**: the model decides every move, at

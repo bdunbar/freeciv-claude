@@ -23,6 +23,15 @@ command. In another terminal:
 
 Pick a nation, click **Ready**, and the game begins.
 
+Claude's seat then waits for orders every turn. To have a fresh Claude
+invocation answer each one without you asking, leave this running in a third
+terminal:
+
+    ./fcgame.py run-agent --agent-command 'claude -p --allowedTools Read Write Edit Glob'
+
+See "Waking Claude for a turn" below for what that does and what it lets the
+model do.
+
 ## Playing it
 
 `PLAYBOOK.md` is what has been learned by playing: rules that reverse a
@@ -216,6 +225,160 @@ result file and the rest still run. `sent` in that file means the packet
 went out -- whether the server honoured it shows up in the next
 observation, which is the only real verdict.
 
+## Waking Claude for a turn
+
+Three things in here look similar and do different jobs. The difference is
+the whole reason the runner exists:
+
+| | what it does | what it cannot do |
+|---|---|---|
+| `fcbot/interactive.py` | makes the freeciv seat **wait**: writes `NNNN.obs.json` and blocks until `NNNN.orders.json` appears | nothing tells anyone the observation is there |
+| `./fcgame.py play` | lets a model invocation that **already exists** answer one turn in a single call | it cannot create that invocation |
+| `./fcgame.py run-agent` | stays awake, notices the waiting turn, and **starts a fresh invocation** for it | it decides nothing about the game |
+
+The problem is not that the model is slow between turns. It is that between
+invocations the model does not exist. Polling a file cannot bring one into
+being, and a tool call left blocking for three days is not a design. So
+something that is always awake has to do it:
+
+    observation appears -> deterministic filter -> one bounded invocation
+      -> proposed orders -> validated -> submitted -> record -> back to waiting
+
+### Running it
+
+Start the host as usual, then, in another terminal:
+
+    ./fcgame.py run-agent \
+      --agent-command 'claude -p --allowedTools Read Write Edit Glob' \
+      --timeout 900
+
+That is all of the setup. The runner watches `games/turns`, and each time a
+turn comes up it starts one `claude -p`, hands it the briefing on stdin,
+waits, checks the orders it wrote, and submits them. The log says what it is
+doing:
+
+    waiting for turn
+    turn 42 observation detected
+    turn 42: starting agent
+    turn 42: agent ok after 71.3s (exit 0)
+    turn 42: orders validated -- 6 order(s) submitted
+    waiting for turn
+
+Useful while trying it out:
+
+    --dry-run       print the command and the whole briefing, run nothing
+    --once          play one turn and exit  (with --wait N, wait N seconds
+                    for a turn to turn up first)
+    --keep-going    carry on after a turn the agent failed, rather than
+                    stopping so it can be looked at
+
+### The agent command
+
+The command is a template, not a Claude invocation with a wrapper around it.
+Everything the job involves reaches the command three ways, because every
+CLI takes its input differently:
+
+* **placeholders** — `{brief} {obs} {obs_text} {orders} {turn} {turns_dir}
+  {strategy} {journal}`, substituted into the command. Braces that are not
+  one of those names are left alone, so a command containing JSON or a shell
+  expansion is safe.
+* **environment** — the same values as `FC_BRIEF`, `FC_OBS`, `FC_ORDERS`,
+  `FC_TURN` and so on.
+* **stdin** — the briefing, unless `--stdin none`.
+
+So a shell script, a different model's CLI, or a one-line fake for a test
+are all equally valid agents:
+
+    --agent-command 'my-agent --job {brief} --out {orders}'
+    --shell --agent-command 'cat {obs_text} | some-model > {orders}'
+
+### What the agent is told, and what it must write
+
+The runner writes `NNNN.brief.md` before each invocation. A wakeup has to be
+self-sufficient, because nothing of the previous one survives, so the
+briefing carries: the paths to the observation and its readable twin, the
+wake report if autoplay stopped for a reason, what last turn's orders
+actually did, the durable strategy, the tail of the journal, a pointer to
+`PLAYBOOK.md`, and the exact path to write.
+
+That path is **not** the one the game reads. The agent writes
+`NNNN.orders.proposed.json`; the host polls only for `NNNN.orders.json`.
+The runner parses the proposal, checks it is a JSON list of objects, checks
+the turn is still the pending one, and only then renames it into place. The
+rename is atomic and is the runner's single act of submission, so a
+half-written or half-thought file cannot reach the server.
+
+The runner will **never** write orders of its own. An agent that crashed,
+timed out, wrote prose, or wrote nothing leaves the turn pending and the
+reason in the log — because an empty orders list is a real move (it ends the
+phase unchanged) and has to be chosen, not fallen into.
+
+### Durable memory
+
+Two files, both created with an explanation the first time the runner runs:
+
+    games/turns/strategy.md   the plan that outlives an invocation
+    games/turns/journal.md    one short entry per decision point
+
+Paths are configurable with `--strategy` and `--journal`. They hold *intent*
+— what we are trying to do, what we promised whom — and deliberately not
+game state: freeciv's own files are the only copy of that, and a second
+store that drifts out of date is worse than none. Nothing summarises them
+automatically yet; the invocation is asked to keep them, and the journal is
+carried into the briefing by its tail rather than in full.
+
+The runner keeps its own records separately, which is the machine's account
+rather than the model's memory: `NNNN.agent.json` (status, attempts, exit
+code, output tails), `NNNN.agent.log` (the agent's output, capped), and
+`runner.jsonl`.
+
+### When things go wrong
+
+Every failure case leaves the turn pending and says so:
+
+| | |
+|---|---|
+| agent wrote nothing | `no_orders`, turn left pending |
+| agent wrote prose, or `{...}` instead of `[...]` | `invalid_orders`, nothing submitted |
+| agent exited nonzero | reported with its exit code and stderr tail — but if it wrote good orders first, the turn still counts |
+| agent hung | killed at `--timeout`, whole process group, turn left pending |
+| freeciv moved on meanwhile | `superseded`; the stale proposal is discarded, never submitted |
+| observation half-written | not treated as a turn; the runner waits |
+| two runners started | the second refuses (`flock` on `games/turns/runner.lock`, released by the kernel however the first dies) |
+
+A failed turn stops the runner by default, so it can be looked at rather
+than retried into a loop. Starting it again does **not** silently retry a
+turn an earlier run gave up on — `--retry-failed` asks for that explicitly.
+`--max-attempts N` retries within a single run.
+
+Turn numbers restart with every game. The host archives the previous game's
+per-turn files into `previous-<timestamp>/`, but not `strategy.md` and
+`journal.md`: a mid-game rejoin builds an `InteractiveAgent` too, and losing
+the plan because the host was restarted would be worse than carrying a stale
+one. The runner notices the turn number going backwards and says so; moving
+those two files aside for a new game is yours to do.
+
+### What you are agreeing to
+
+`--agent-command` runs whatever you put in it, as you, with your
+environment. There is no sandbox here, and `--shell` adds a shell. That is
+worth saying plainly because the command above hands a model a `Write` tool
+and a repository:
+
+* the tools you grant are the permission boundary. `claude -p --allowedTools
+  Read Write Edit Glob` can read and write any file it can reach; adding
+  `Bash` gives it your shell. Grant the least that lets it play a turn.
+* the briefing is assembled from the observation, the journal, and
+  `PLAYBOOK.md`. Chat from other players in the game reaches the model
+  through the observation, as game content — do not put anything in the
+  journal or the strategy file that you would not want acted on.
+* the runner validates **shape**, not intent: a well-formed order list is
+  submitted. `orders.py` refuses the illegal ones, and the server refuses
+  the rest, but nothing here asks whether a legal move was a good idea.
+* the model runs unattended, on your account, once per turn. `--timeout`
+  bounds one invocation; nothing bounds how many turns a game has.
+
+
 ## How it works
 
 Claude is a real client, not a puppet. `fcbot/protocol/` implements the
@@ -241,7 +404,7 @@ as on you: it only ever learns what a human in its seat would see.
 
 | file | role |
 |---|---|
-| `fcgame.py` | CLI: `host` a game, `play` a turn, `status` to look |
+| `fcgame.py` | CLI: `host` a game, `play` a turn, `run-agent` to wake one per turn, `status` to look |
 | `fcbot/protocol/pdef.py` | parser for freeciv's `packets.def` |
 | `fcbot/protocol/dataio.py` | wire encodings (mirrors `common/dataio.c`) |
 | `fcbot/protocol/codec.py` | packet encode/decode incl. delta compression |
@@ -254,6 +417,7 @@ as on you: it only ever learns what a human in its seat would see.
 | `fcbot/orders.py` | JSON orders resolved to real actions |
 | `fcbot/policy.py` | standing orders, and the exceptions that stop them |
 | `fcbot/interactive.py` | the turn loop: autoplay under policy, or wait for the model |
+| `fcbot/runner.py` | the process that stays awake and starts one invocation per turn |
 | `fcbot/agent.py` | the scripted fallback agent (`--mode auto`) |
 | `fcbot/server.py` | launches and drives `freeciv-server` |
 | `PLAYBOOK.md` | what playing the game has taught, kept between sessions |

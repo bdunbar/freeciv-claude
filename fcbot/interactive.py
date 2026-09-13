@@ -62,9 +62,14 @@ class InteractiveAgent(object):
         a city. The old files are kept, not deleted; they are a record of a
         game that was played.
         """
+        # Every per-turn file, not just the two the game reads: a stale
+        # wake report or runner record for turn 7 would be read as this
+        # game's turn 7 and is just as wrong, only quieter.
         leftovers = [n for n in os.listdir(self.dir)
                      if n.endswith((".obs.json", ".obs.txt", ".orders.json",
-                                    ".result.json"))]
+                                    ".orders.proposed.json", ".result.json",
+                                    ".wake.json", ".agent.json", ".agent.log",
+                                    ".brief.md"))]
         if not leftovers:
             return None
         stamp = time.strftime("%Y%m%d-%H%M%S")
