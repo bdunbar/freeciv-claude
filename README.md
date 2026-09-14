@@ -14,23 +14,69 @@ package has a matching 3.2 client *and* server in one install, and is what
 
 ## Quick start
 
-    ./fcgame.py host --ai 3 --skill hard
+Three terminals. The first hosts the game and holds Claude's seat:
 
-That starts a server, connects a second client to it, and prints a join
-command. In another terminal:
+    ./fcgame.py host --ai 3 --skill hard --tiles-per-player 250
+
+The second is your own client — the host prints this line for you:
 
     flatpak run org.freeciv.gtk322 -a -p 5556 -s localhost
 
-Pick a nation, click **Ready**, and the game begins.
+Pick a nation, click **Ready**, and the game starts.
 
-Claude's seat then waits for orders every turn. To have a fresh Claude
-invocation answer each one without you asking, leave this running in a third
-terminal:
+The third is what makes Claude actually play. Without it the seat writes an
+observation each turn and waits forever, because nothing wakes a model:
 
     ./fcgame.py run-agent --agent-command 'claude -p --allowedTools Read Write Edit Glob'
 
-See "Waking Claude for a turn" below for what that does and what it lets the
-model do.
+That is the whole setup. The runner notices each waiting turn, starts one
+fresh Claude for it, checks the orders it wrote, and submits them. Most
+turns are played by the standing-orders engine without waking anything;
+see "Waking Claude for a turn" for what it does and what it lets the model
+do.
+
+### Options worth knowing
+
+    --ai 3                   computer players besides you and Claude
+    --skill hard             novice easy normal hard cheating experimental
+    --tiles-per-player 250   land tiles each (server default 100, max 1000)
+    --map-size 8             OR the whole map in thousands of tiles (max 2048)
+    --topology square        square (default here) iso hex iso-hex
+    --nation Roman           what Claude plays
+    --save-each-turn         a save every turn, so the game survives a reboot
+    --timeout 0              server turn timeout; 0 means untimed
+
+`--tiles-per-player` and `--map-size` are mutually exclusive: the first
+sizes the map from the player count, the second sets it outright. Passing
+neither gives you the server's default of 100 tiles per player, which is
+cramped for five players — everyone is a neighbour by turn 10.
+
+A bigger map costs model invocations, not just turns: more exploring, more
+first contacts, more settling sites to choose, and every one of those is a
+fresh invocation.
+
+On the runner side:
+
+    --timeout 900            seconds one invocation may take
+    --once                   play a single turn and exit
+    --dry-run                print the briefing and the command, run nothing
+    --keep-going             carry on past a turn the agent failed
+
+### Starting a fresh game
+
+The host archives the previous game's per-turn files by itself. It does
+**not** touch the two durable memory files, because a mid-game `rejoin`
+also builds an `InteractiveAgent` and losing the plan to a host restart
+would be worse than carrying a stale one. So before a new game:
+
+    mkdir -p games/turns/game-$(date +%Y%m%d)
+    mv games/turns/strategy.md games/turns/journal.md games/turns/runner.jsonl \
+       games/turns/game-$(date +%Y%m%d)/
+
+Skip it and Rome wakes on turn 1 holding the last game's map reading, city
+sites and treaty promises, all stated with confidence and none of it true.
+Anything in that journal worth keeping belongs in `PLAYBOOK.md`, which is
+committed and survives on purpose.
 
 ## Playing it
 
