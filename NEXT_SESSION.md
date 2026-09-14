@@ -31,6 +31,30 @@ extended to the per-turn files it was leaking (`.wake.json` among them).
 
 The protocol itself is unchanged, again deliberately.
 
+### An idea on file: a TUI front end
+
+Brian has a load-testing framework at work, written in Go: a TUI that
+launches and displays several shell windows at once. It would suit this
+well, since playing currently costs three terminals by hand -- host,
+freeciv client, `run-agent` -- plus a spinner or similar saying "Claude is
+thinking, be patient" while an invocation is out.
+
+That last part is the bit that earns its keep. A turn played by
+`policy.py` returns in about a second and wakes nobody; a real invocation
+takes one to two minutes. From the outside those are indistinguishable, so
+the standing-orders design is invisible unless you are reading the runner's
+log. "Policy played turns 2-11" versus "Claude is thinking (0:47)" would
+make it legible.
+
+No runner changes needed -- the seam is already there. It prints
+`turn N observation detected` / `starting agent` / `agent ok after Xs`, and
+appends one JSON object per turn to `games/turns/runner.jsonl`, which is
+the better thing to tail: structured, and it does not break when a log line
+gets reworded.
+
+Not agreed work, and the original is Brian's work code, so this would be a
+reimplementation rather than a port.
+
 ### What this leaves
 
 * **Consequence 2, every wakeup reloads context**, is only half answered.
