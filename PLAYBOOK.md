@@ -16,6 +16,16 @@ policy missing `Workers` will halt the moment one is built. Re-issue the
 policy whenever the shape of the game changes: a new unit type, a new city
 that wants a different build rule, a war.
 
+* **A unit built this turn arrives idle, whatever the policy says.** The
+  policy runs before the city finishes building, so the new unit appears
+  after it and nothing has told it what to do. The second Warriors came out
+  unfortified and had to be fixed by hand. Expect one idle unit on the turn
+  after any build completes.
+* **`enemy_within` counts anyone you have no contact with as hostile**, and
+  that includes wandering animals. With `enemy_within: 3` a bear walking
+  past the capital wakes a whole invocation. On a crowded map 3 is too
+  twitchy; pick a radius you would actually change a plan over.
+
 ## Rules that reverse a decision
 
 * **The government tile penalty.** Under Despotism (classic ruleset), a tile
@@ -58,6 +68,18 @@ that wants a different build rule, a war.
 * **`withdraw` then `accept` in the same turn does not work.** The accept
   reads local state that is still stale until the next pump, says "already
   accepted", and sends nothing. Split them across two turns.
+* **An AI may clear your offer off the table and counter with its own.**
+  Ours was embassy-plus-peace; overnight the meeting held one clause, their
+  ceasefire, accepted on their side and waiting on us. The choice then is
+  not peace versus ceasefire, it is ceasefire versus nothing. Take it:
+  peace is reachable *from* ceasefire, so it costs no future, and adding a
+  peace clause instead would clear their acceptance and re-open a
+  negotiation they have already walked out of once.
+* **An offer that is waiting on them is finished work -- leave it alone.**
+  Any new clause clears both acceptances, so "improving" a pending offer
+  withdraws it. Say more in chat if you must; do not touch the table.
+* **Offer the whole package in one meeting**, not embassy this turn and
+  peace the next. Contact is the scarce resource, not clauses.
 
 ## Openings
 
@@ -72,6 +94,11 @@ that wants a different build rule, a war.
 
 * **It wraps east-west.** An explorer walking west off x=2 reappears at
   x=222. There is no western edge to be backed against.
+* **`startpos ALL` in the server log means one continent for everybody.**
+  It is in the settings the host prints at startup, and it is worth reading
+  before turn 1: it decides whether the early game is a land grab against
+  close neighbours or a quiet expansion. Assume close neighbours when you
+  see it.
 * **`--map-size` is in thousands of tiles** and only works because we force
   `mapsize FULLSIZE`; the server's own default sizes the map from
   `tilesperplayer` and ignores `size` entirely.
@@ -84,3 +111,24 @@ that depends on packets that streamed past at login. The government tile
 penalty needed `PACKET_RULESET_EFFECT`, which arrives once at login, so
 teaching the seat about it mid-game was impossible: that fix only takes
 effect in the next game.
+
+## Playing a turn under the runner
+
+`./fcgame.py run-agent` starts one invocation per turn, and it exits when
+you do. Nothing of it survives except the files it wrote.
+
+* **Write the orders file first, then the journal.** One invocation wrote a
+  full journal entry describing the turn it was about to play, and very
+  nearly exited without playing it. The orders file is the only thing the
+  game reads; everything else is a note to a stranger. Commit the turn,
+  then write about it.
+* **If a journal entry exists for this turn but the observation is
+  unchanged, nothing was sent.** Re-decide from the observation, not from
+  the entry -- the entry describes an intention, and intentions do not
+  reach the server. A journal that says "founded Roma" next to an
+  observation showing 0 cities means the last invocation died before
+  submitting.
+* **The runner never plays for you.** If the orders file is missing or
+  malformed the turn is left pending and the runner stops. Nothing is
+  submitted on your behalf, so a turn you did not finish is a turn nobody
+  played -- but also a turn nobody ruined.
