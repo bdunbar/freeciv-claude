@@ -14,6 +14,21 @@ All six stages exist in `fcbot/runner.py`, minimally, in about 600 lines.
 Playing one game through it is the only evidence any of this has, which is
 worth remembering while reading it.
 
+## The reframing everything else follows from
+
+**The agent is not a process. It is a function call with a large, variable
+cost.**
+
+It cannot hold a socket, a subscription, a watch, or a session. Anything
+that requires continuous presence has to live somewhere else. That inverts
+the usual mental model, in which "the agent" is the system and the tools
+hang off it: here the deterministic runner *is* the system, and the model is
+an expensive subroutine it calls when it reaches something it cannot decide.
+
+Every rule below is a consequence of that one sentence. If a design starts
+to violate one of them, it is usually because somebody has quietly gone back
+to imagining a process.
+
 ## What the game actually demonstrated
 
 ### The missing primitive was invocation creation, not communication
@@ -101,6 +116,60 @@ Wake on exceptions, not on ticks. The filter is not a cost optimisation
 bolted on afterwards; it is what makes the pattern affordable enough to run
 at all.
 
+### Time is the adversary, not the network
+
+Ordinary integration risk is that the call fails. Here the risk is that the
+call **succeeds slowly**.
+
+An invocation takes one to two minutes of wall clock. Every fact it read at
+the start may be false by the time it writes, and it has no way to find out:
+it cannot poll, it is not watching anything, and it will not be told. The
+whole of its world is the snapshot it was handed.
+
+This is not the latency an ordinary distributed system budgets for. It is
+enormous, highly variable, and metered. It means:
+
+* the window between read and commit is measured in **minutes**, so anything
+  that can change in minutes must be re-checked by the deterministic layer
+  immediately before the commit, not trusted from the briefing;
+* an agent cannot be given work whose correctness depends on the world
+  holding still, unless something outside it is holding the world still;
+* "retry the invocation" is not free the way retrying an HTTP call is free,
+  so the filter that decides whether to invoke at all carries more weight
+  than any retry policy.
+
+Freeciv was gentle here: the server is untimed and will wait all night. A
+foreign system that expires a lock, closes a window, or moves a market
+while the agent thinks is the same problem without the mercy.
+
+### Never let the agent be the sole author of the record of what it did
+
+This is the finding to build policy around, because it was observed rather
+than reasoned to, and because it is the one that quietly corrupts everything
+downstream.
+
+On turn 1 the invocation wrote a detailed journal entry describing a turn it
+had **not played**: which city it founded, on which tile, and why. Confident,
+specific, and false. It caught itself on re-reading the observation and
+recovered, and the runner recorded a clean success.
+
+Had it not caught itself, the durable record would have said the turn was
+played. Nothing else would have disagreed, because nothing else was writing
+a record.
+
+So the audit trail must come from the deterministic layer observing
+outcomes, never from the agent's self-report:
+
+* `runner.jsonl` and `NNNN.agent.json` are written by the runner. They say
+  what was actually run and what actually landed.
+* `journal.md` is written by the model. It says what the model believed and
+  intended.
+
+Keeping those two separate was a guess when this was built and turned out to
+matter more than expected. An agent's account of its own actions is
+**testimony, not telemetry**. Store it, use it for continuity, and never let
+it be the thing you verify against.
+
 ### Agents perform durable side effects out of order
 
 This one was not predicted. It was observed.
@@ -142,6 +211,13 @@ above is the part that is easy to over-generalise from one game.
   input other players wrote.
 * **One game.** Low stakes, single tenant, one machine, no adversary with
   anything to gain.
+
+Worth listing the gifts freeciv gave us, because a reader will not get them
+next time: the server **waits forever**, there is a **single writer**, the
+commit is a **local atomic rename**, there is **one tenant**, there is **no
+adversary**, and the entire turn commits as **one file**. Remove any one of
+those and something above gets substantially harder. Remove the last one and
+most of it has to be redesigned.
 
 Of the six stages, the two weak ones are **authorized action** -- currently
 just the tool grant -- and **verification**, which only checks that the
